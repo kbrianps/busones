@@ -1240,7 +1240,13 @@ async function renderPlacePanel(warning) {
     list.append(placeRow('stop', 'stop', s[3], s[4] ? `Parada · ${s[4]}` : 'Parada',
       () => { closePlacePanel(); setPlace(s[1], s[2], s[3], 'manual'); }, false));
   }
-  if (!neighborhoods.length && !found.length) list.append(el('p', 'place-notice', `Nada encontrado para "${$('#place-field').value}".`));
+  // With nothing from our own data, the address search has not run yet: point
+  // at it instead of saying nothing was found.
+  if (!neighborhoods.length && !found.length) {
+    list.append(el('p', 'place-notice', q.length >= 3
+      ? 'Nenhum bairro ou parada com esse nome. Toque em "Buscar endereço" ou aperte Enter para procurar a rua.'
+      : 'Digite pelo menos 3 letras para buscar um endereço.'));
+  }
 }
 
 async function searchAddress(text) {
