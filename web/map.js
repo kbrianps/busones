@@ -489,7 +489,7 @@ function drawNumberTag(ctx, b, r) {
    leave visible. */
 function fitPoints(pts) {
   if (!pts.length) return;
-  const sheet = document.getElementById('folha');
+  const sheet = document.getElementById('sheet');
   const topFree = 72;
   const bottom = sheet && !sheet.hidden ? sheet.getBoundingClientRect().top : view.H - 40;
   const alt = Math.max(160, bottom - topFree - 30);

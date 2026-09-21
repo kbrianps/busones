@@ -266,8 +266,12 @@ A paleta do onibus-rj, sorteada pela posição da linha no trilho, saiu: o Brian
 
 ## Revisão 4.11: o app é azul
 
-A pedido do Brian, o verde do Lá vem deixou de ser a cor do app. A cor da marca é o azul `#1A73E8`, o mesmo do ponto do GPS: botão de pesquisa, ícone de local na barra, alfinete do local escolhido no mapa (antes vermelho), interruptores dos ajustes, botão "Estou aqui" e contorno de foco. O verde ficou só onde quer dizer "ao vivo" (a bolinha de "Tempo real", o sinal ao lado do tempo, "chegando"); o vermelho, só no × que remove todas as linhas e em "Remover linha". A aba se chama "Busones" e o ícone é um ônibus azul.
+A pedido do Brian, o verde do Lá vem deixou de ser a cor do app. A cor da marca é o azul `#1A73E8`, o mesmo do ponto do GPS: botão de pesquisa, ícone de local na barra, alfinete do local escolhido no mapa (antes vermelho), interruptores dos ajustes, botão "Estou aqui" e contorno de foco. O verde ficou só onde quer dizer "ao vivo" (a bolinha de "Tempo real", o sinal ao lado do tempo, "chegando"); o vermelho, só no × que remove todas as linhas e em "Remover linha". A aba se chama "Busones"; o ícone é um ônibus branco sobre um quadrado azul arredondado.
 
 ## Revisão 4.12: o local só muda quando você pede
 
 A pedido do Brian, saíram o arraste livre do alfinete e o "segurar o dedo no mapa": era fácil mudar o local sem querer ao mexer no mapa. O local agora muda só pelo GPS, pela busca de bairro, parada ou endereço, ou por "Escolher no mapa", com o alfinete fixo no centro. O painel "Onde você está?" também perdeu a terceira linha, que repetia o local já escolhido sem fazer nada útil.
+
+## Revisão 4.13: nove linhas, nove cores
+
+As cores oficiais por região (revisão 4.10) saíram: linhas da mesma região ficavam iguais, e o Brian não gostou. Agora são no máximo 9 linhas acompanhadas e uma paleta de 9 cores no mesmo tom: o azul do app (`#1A73E8`), que é a primeira, e oito matizes gerados com a mesma claridade percebida dele (OKLCH L 0,57), escurecidos só o necessário para o número branco ter contraste de 4,5:1 ou mais. A Tableau 10 chegou a ser usada e saiu: misturava tons pastel e fortes, e metade das cores pedia letra preta. Cada linha pega a primeira cor livre ao ser adicionada e fica com ela até ser removida; remover uma linha não muda a cor das outras, e duas linhas suas nunca têm a mesma cor. A 10ª linha é recusada com um aviso. As cores ficam salvas no aparelho. Linhas que você não acompanha (por exemplo, na folha de uma parada) usam o azul-marinho, e quando várias estão no mapa o número aparece ao lado do ônibus. O GTFS continua exportando a cor oficial de cada linha, que não é mais usada no cliente.

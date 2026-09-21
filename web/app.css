@@ -96,6 +96,12 @@ body.searching #where { display: none; }
 .suggestion-text small { display: block; font-size: 12.5px; color: var(--text-2); margin-top: 1px; }
 .suggestion-text small.warning { color: var(--warn); }
 .suggestion-empty { padding: 14px 16px; color: var(--text-2); font-size: 14px; }
+#flash {
+  position: fixed; top: 84px; left: 50%; transform: translateX(-50%); z-index: 12;
+  max-width: calc(100% - 32px); padding: 10px 16px; border-radius: 12px;
+  background: var(--text); color: var(--bg); font-size: 14px; line-height: 1.4;
+  box-shadow: var(--shadow); text-align: center;
+}
 .suggestion-note { padding: 2px 16px 12px; color: var(--text-2); font-size: 12.5px; line-height: 1.4; }
 
 /* ---------- line badge: the line's official colour, navy until it loads ---------- */
@@ -133,9 +139,13 @@ body.searching #where { display: none; }
 }
 body.sheet-open #rail, body.place-open #rail { display: none; }
 #rail::-webkit-scrollbar { display: none; }
-#rail .line-badge { cursor: pointer; }
+/* A white ring, like the buses and pins on the map, so every badge keeps its
+   shape over any part of the map, dark theme included. The line in focus
+   grows a little; the others fade. */
+#rail .line-badge { cursor: pointer; border-color: #fff; }
 #rail .line-badge:hover { transform: translateX(2px); }
-#rail .line-badge.active { border-color: rgba(255, 255, 255, .9); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); }
+#rail .line-badge.active { transform: scale(1.1); box-shadow: 0 8px 24px rgba(15, 23, 42, .28); }
+#rail .line-badge.active:hover { transform: scale(1.1) translateX(2px); }
 #rail .line-badge.dimmed { opacity: .4; }
 #rail .line-badge.clear {
   background: #dc2626; color: #fff;
@@ -307,7 +317,8 @@ body.picking #top, body.picking #rail, body.picking #fabs,
 body.picking #gear { display: none; }
 
 /* ---------- settings ---------- */
-#settings { position: absolute; inset: 0; z-index: 9; background: var(--bg); overflow-y: auto; }
+#settings, #about { position: absolute; inset: 0; z-index: 9; background: var(--bg); overflow-y: auto; }
+#about { z-index: 10; }
 .settings-top { display: flex; align-items: center; gap: 12px; padding: 8px 8px; border-bottom: 1px solid var(--border); }
 .settings-top button { width: 48px; height: 48px; display: grid; place-items: center; color: var(--text-2); }
 .settings-top h1 { margin: 0; font-size: 20px; font-weight: 500; }
@@ -321,6 +332,28 @@ body.picking #gear { display: none; }
 .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: var(--shadow-soft); transition: left .15s; }
 .setting[aria-checked="true"] .toggle { background: var(--brand); }
 .setting[aria-checked="true"] .toggle::after { left: 20px; }
+.setting .chevron { color: var(--text-2); font-size: 22px; line-height: 1; }
+
+/* ---------- about ---------- */
+.about-body { padding: 4px 20px 40px; max-width: 640px; }
+.about-body h2 {
+  margin: 26px 0 8px; font-size: 12.5px; font-weight: 600; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.about-body p, .about-body li { font-size: 15px; line-height: 1.5; }
+.about-body p { margin: 0 0 10px; }
+.about-body ul { margin: 0 0 10px; padding-left: 20px; }
+.about-body li { margin-bottom: 6px; }
+.about-body a { color: var(--brand); }
+.about-intro { margin-top: 18px; }
+.about-intro b { font-size: 17px; }
+.about-link {
+  display: block; padding: 12px 0; border-bottom: 1px solid var(--border);
+  color: inherit !important; text-decoration: none;
+}
+.about-link b { display: block; font-size: 15.5px; font-weight: 500; color: var(--brand); }
+.about-link small { display: block; margin-top: 2px; font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.about-status { font-size: 13px; color: var(--text-2); }
 
 @media (min-width: 760px) {
   #top { right: auto; width: 420px; }

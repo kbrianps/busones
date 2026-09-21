@@ -17,10 +17,21 @@ const STATIC = '/dist';
 const Z = 13;
 const NEARBY_RADIUS = 600;
 const REFRESH_MS = 12000;
+/* Kept in step with Cargo.toml. */
+const APP_VERSION = '0.1.0';
+const REPO = 'https://github.com/kbrianps/busones';
 const CITY_CENTER = [-22.9068, -43.1729];
 
-/* For the few lines the GTFS gives no colour, and lines without a route. */
-const FALLBACK_COLOR = '#546E7A';
+/* Up to nine lines, one colour each, all in the same tone: the app's blue and
+   eight hues at its perceived lightness (OKLCH L 0.57), darkened just enough
+   where needed for white numbers to read at 4.5:1 or more, and ordered so
+   the first lines you add are the most different. A line takes the first
+   free colour when you add it and keeps it until you remove it, so two of
+   your lines never share one and removing a line recolours nothing. */
+const MAX_LINES = 9;
+const PALETTE = ['#1A73E8', '#B0600D', '#0F8471', '#B4489B', '#865CCE', '#C94251', '#38850C', '#86740C', '#0F8098'];
+/* Lines you do not follow, as in the stop sheet. */
+const NEUTRAL_COLOR = '#303F9F';
 
 /* The badge used in lists: always the same width, so destinations line up in
    one column whatever the code ("3" or "LECD148"); the type shrinks instead. */
@@ -50,6 +61,22 @@ function el(tag, cls, txt) {
   if (txt != null) e.textContent = txt;
   return e;
 }
+/* A short notice under the search bar that goes away by itself. */
+let flashTimer = null;
+function flash(text) {
+  let f = $('#flash');
+  if (!f) {
+    f = el('div');
+    f.id = 'flash';
+    f.setAttribute('role', 'status');
+    document.body.append(f);
+  }
+  f.textContent = text;
+  f.hidden = false;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { f.hidden = true; }, 3500);
+}
+
 function icon(name) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
@@ -113,8 +140,8 @@ const state = {
   myLines: [],
   chosenDir: {},
   catalog: [],
-  /* Official colours: line -> [background, text]. */
-  colors: new Map(),
+  /* Palette index of each line you follow. */
+  lineColors: {},
   /* Which service runs on which date, from the GTFS calendar. */
   calendar: null,
   /* Lines on the road now: line -> [buses, has a route]. */
@@ -147,35 +174,43 @@ function saveState() {
     localStorage.setItem('busones:lines', JSON.stringify(state.myLines));
     localStorage.setItem('busones:directions', JSON.stringify(state.chosenDir));
     localStorage.setItem('busones:settings', JSON.stringify(state.settings));
+    localStorage.setItem('busones:colors', JSON.stringify(state.lineColors));
   } catch {}
 }
 function loadState() {
   try {
     const l = JSON.parse(localStorage.getItem('busones:lines') || '[]');
-    if (Array.isArray(l)) state.myLines = l.filter(x => typeof x === 'string').slice(0, 8);
+    if (Array.isArray(l)) state.myLines = l.filter(x => typeof x === 'string').slice(0, MAX_LINES);
+    state.lineColors = JSON.parse(localStorage.getItem('busones:colors') || '{}') || {};
     state.chosenDir = JSON.parse(localStorage.getItem('busones:directions') || '{}') || {};
     const a = JSON.parse(localStorage.getItem('busones:settings') || 'null');
     if (a) Object.assign(state.settings, a);
     else state.settings.dark = matchMedia('(prefers-color-scheme: dark)').matches;
   } catch {}
+  reconcileColors();
 }
 
 /* ---------- line colours ----------
- * Every line has one fixed colour: the official one from the GTFS. In Rio it
- * is the stripe of the line's operating region on the new yellow buses (grey
- * for Tijuca, Centro and Zona Sul, orange for Campo Grande, pink for
- * Jacarepaguá...), the corridor colour for the BRT and navy for the executive
- * lines. Badges use it as published. The map only shifts its lightness until
- * it stands out from the background: the official grey would vanish among the
- * streets of a light map, and the navy on a dark one. */
+ * Badges use the colour as is; the map only shifts its lightness until it
+ * stands out from the background (the yellow on a light map, the navy on a
+ * dark one). */
 function lineColor(l) {
-  const c = state.colors.get(l);
-  return (c && c[0]) || FALLBACK_COLOR;
+  const i = state.lineColors[l];
+  return i != null ? PALETTE[i] : NEUTRAL_COLOR;
 }
 function lineTextColor(l) {
-  const c = state.colors.get(l);
-  if (c && c[0] && c[1]) return c[1];
-  return luminance(lineColor(l)) > 0.35 ? '#000000' : '#FFFFFF';
+  return contrast(lineColor(l), '#FFFFFF') >= 3 ? '#FFFFFF' : '#000000';
+}
+/* The first palette colour none of your other lines is using. */
+function assignColor(l) {
+  if (state.lineColors[l] != null) return;
+  const used = new Set(state.myLines.filter(x => x !== l).map(x => state.lineColors[x]));
+  state.lineColors[l] = PALETTE.findIndex((_, i) => !used.has(i));
+}
+/* After loading or replacing the list: every line coloured, no leftovers. */
+function reconcileColors() {
+  for (const k of Object.keys(state.lineColors)) if (!state.myLines.includes(k)) delete state.lineColors[k];
+  for (const l of state.myLines) assignColor(l);
 }
 
 const rgb = hex => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
@@ -838,8 +873,12 @@ function renderSuggestions() {
 /* ---------- following ---------- */
 async function follow(l, yes, headsign) {
   if (yes && !state.myLines.includes(l)) {
-    if (state.myLines.length >= 8) state.myLines.shift();
+    if (state.myLines.length >= MAX_LINES) {
+      flash(`Você já acompanha ${MAX_LINES} linhas. Remova uma para adicionar outra.`);
+      return;
+    }
     state.myLines.push(l);
+    assignColor(l);
     if (headsign) state.chosenDir[l] = headsign;
     saveState();
     await bundle(l);
@@ -847,6 +886,7 @@ async function follow(l, yes, headsign) {
     await refresh();
   } else if (!yes) {
     state.myLines = state.myLines.filter(x => x !== l);
+    delete state.lineColors[l];
     state.fleets.delete(l);
     state.focused.delete(l);
     saveState();
@@ -863,6 +903,7 @@ function removeAll() {
   closeMenu();
   if (!state.myLines.length) return;
   state.myLines = [];
+  state.lineColors = {};
   state.focused.clear();
   state.fleets.clear();
   state.callout = null;
@@ -890,10 +931,13 @@ function fitLine(l) {
   const p = nearestStop(d);
   const pts = [state.here];
   if (p) pts.push([p.lat, p.lon]);
-  if (p) for (const a of arrivalsAt(p.id, l, d.headsign).slice(0, 2)) {
-    const v = (state.fleets.get(l) || []).find(x => x.id === a[7]);
-    if (v) pts.push([v.lat, v.lon]);
-  }
+  const fleet = state.fleets.get(l) || [];
+  const coming = p ? arrivalsAt(p.id, l, d.headsign).slice(0, 2).map(a => fleet.find(x => x.id === a[7])).filter(Boolean) : [];
+  // With no bus on its way to your stop, the buses of this direction closest
+  // to it, so a line that runs far from you does not open on an empty map.
+  const shown = coming.length || !p ? coming
+    : fleet.filter(v => v.shp === d.shape).sort((a, b) => distM([p.lat, p.lon], [a.lat, a.lon]) - distM([p.lat, p.lon], [b.lat, b.lon])).slice(0, 3);
+  for (const v of shown) pts.push([v.lat, v.lon]);
   fitPoints(pts);
 }
 
@@ -979,7 +1023,83 @@ function openSettings() {
     };
     box.append(b);
   }
+  const about = el('button', 'setting');
+  const t = el('div', 'setting-text', 'Sobre o Busones');
+  t.append(el('small', '', 'Como ler o mapa, privacidade, fontes dos dados e onde reclamar'));
+  about.append(t, el('span', 'chevron', '›'));
+  about.onclick = openAbout;
+  box.append(about);
   $('#settings').hidden = false;
+}
+
+/* ---------- about ----------
+ * What the app is and is not, how to read it, where to complain (the city
+ * for a bus, GitHub for the app), what stays on the phone, and whose data it
+ * is built on, which the OpenStreetMap and Nominatim licences require. */
+function openAbout() {
+  const box = $('#about-body');
+  box.textContent = '';
+  const h2 = txt => box.append(el('h2', '', txt));
+  const p = (...parts) => { const e = el('p'); e.append(...parts); box.append(e); return e; };
+  const a = (href, txt) => { const e = el('a', '', txt); e.href = href; e.target = '_blank'; e.rel = 'noopener'; return e; };
+  const ul = items => { const e = el('ul'); for (const i of items) { const li = el('li'); li.append(...[].concat(i)); e.append(li); } box.append(e); };
+  const link = (href, title, sub) => {
+    const e = a(href, '');
+    e.className = 'about-link';
+    e.append(el('b', '', title), el('small', '', sub));
+    box.append(e);
+  };
+
+  const intro = p(el('b', '', 'Busones'), el('br'),
+    'Os ônibus do Rio em tempo real: onde estão as linhas que você acompanha e quanto falta para chegarem ao seu ponto. Gratuito, sem anúncio e sem cadastro.');
+  intro.className = 'about-intro';
+  p('O Busones não é da Prefeitura, da SMTR nem das empresas de ônibus. Ele usa os dados abertos que a Prefeitura publica.');
+
+  h2('Como ler o mapa');
+  ul([
+    'Os tempos são estimativas, sempre em faixa ("em 4 a 7 min"), calculadas pela velocidade atual dos ônibus da linha. Trânsito e paradas longas mudam o tempo.',
+    'Ônibus colorido tem sinal recente. Esmaecido: o sentido ainda não foi confirmado. Cinza: sem sinal há mais de 3 minutos.',
+    'A ponta do ônibus aponta para onde ele vai.',
+    `Cada linha que você acompanha tem uma cor só dela: até ${MAX_LINES} linhas, sem repetir cor. Linhas que você não acompanha, como as que aparecem ao abrir uma parada, ficam em azul-marinho, com o número ao lado do ônibus.`,
+  ]);
+
+  h2('Reclamações e problemas');
+  link('https://www.1746.rio/hc/pt-br/sections/10838040887579', 'Reclamar de um ônibus',
+    'Não parou, atrasou, lotado: Central 1746 da Prefeitura. Também pelo telefone 1746. Informe a linha, a data e a hora.');
+  const issueBody = [
+    '**O que aconteceu?**', '', '', '**O que você esperava?**', '', '', '---',
+    `Versão: ${APP_VERSION}`, `Navegador: ${navigator.userAgent}`, `Tela: ${innerWidth}x${innerHeight}`,
+  ].join('\n');
+  link(`${REPO}/issues/new?${new URLSearchParams({ title: 'Problema no app: ', body: issueBody })}`,
+    'Relatar um problema no app',
+    'Abre uma issue no GitHub (precisa de conta), já com a versão e o navegador. Sua localização não vai junto.');
+
+  h2('Privacidade');
+  ul([
+    'Sem anúncios, sem cookies e sem rastreadores.',
+    'Ficam salvos só neste aparelho: as linhas que você acompanha, o sentido escolhido de cada uma, os ajustes e o local escolhido. Para apagar, limpe os dados do site no navegador.',
+    'Para mostrar o nome da rua onde você está, a posição é enviada ao nosso servidor, que consulta o OpenStreetMap. Não vendemos nem repassamos dados a ninguém.',
+  ]);
+
+  h2('Dados e licenças');
+  ul([
+    ['Ônibus, linhas, paradas e horários: dados abertos da ', a('https://www.data.rio/', 'Secretaria Municipal de Transportes (SMTR)'), ', Prefeitura do Rio.'],
+    ['Mapa: © ', a('https://www.openstreetmap.org/copyright', 'colaboradores do OpenStreetMap'), ', com recorte do ', a('https://protomaps.com/', 'Protomaps'), '.'],
+    ['Endereços: ', a('https://nominatim.org/', 'Nominatim'), ', sobre os dados do OpenStreetMap.'],
+  ]);
+
+  h2('Código aberto');
+  p('O código do Busones é aberto, sob a licença GPLv3: ', a(REPO, 'github.com/kbrianps/busones'), '.');
+  const status = p(`Versão ${APP_VERSION}`);
+  status.className = 'about-status';
+  getJson(`${GEO}/status.json`).then(s => {
+    if (!s || !s.vehicles) return;
+    const n = s.vehicles.in_service.toLocaleString('pt-BR');
+    status.textContent = `Versão ${APP_VERSION} · agora: ${n} ônibus em serviço, última posição recebida há ${s.newest_fix_age_s} s`;
+  }).catch(() => {});
+
+  $('#about').hidden = false;
+  $('#about').scrollTop = 0;
 }
 function applyTheme() {
   document.documentElement.dataset.theme = state.settings.dark ? 'dark' : 'light';
@@ -1051,7 +1171,13 @@ function scene() {
       // In focus: every bus riding this direction, not just the next few.
       for (const v of state.fleets.get(l) || []) if (v.shp === d.shape) addBus(v, color);
     } else if (!state.sheet) {
-      for (const v of busesComingToMe(l)) addBus(v, color);
+      // Normally only the next buses to the stop you would use. When none is
+      // on its way (the line runs far from you, or its buses are all beyond
+      // reach of the estimate), every bus riding this direction instead, so
+      // a line with thirty buses on the road never shows an empty route.
+      const coming = busesComingToMe(l);
+      if (coming.length) for (const v of coming) addBus(v, color);
+      else for (const v of state.fleets.get(l) || []) if (v.shp === d.shape) addBus(v, color);
     }
   }
 
@@ -1335,7 +1461,7 @@ async function init() {
     state.hasPlace = true;
     state.place = { mode: 'manual', name: saved.name || 'Local escolhido' };
   }
-  if (q.get('lines')) { state.myLines = q.get('lines').split(',').filter(Boolean).slice(0, 8); saveState(); }
+  if (q.get('lines')) { state.myLines = q.get('lines').split(',').filter(Boolean).slice(0, MAX_LINES); reconcileColors(); saveState(); }
   applyTheme();
   view.center = [...state.here];
   view.z = 15;
@@ -1359,13 +1485,13 @@ async function init() {
   $('#pick-ok').onclick = confirmPick;
   $('#gear').onclick = openSettings;
   $('#settings-back').onclick = () => { $('#settings').hidden = true; };
+  $('#about-back').onclick = () => { $('#about').hidden = true; };
 
   [state.catalog, state.calendar] = await Promise.all([
     getJson(`${STATIC}/lines.json`).catch(() => []),
     getJson(`${STATIC}/calendar.json`).catch(() => null),
   ]);
   dayCache.at = -1;
-  state.colors = new Map(state.catalog.map(c => [c[0], [c[5] || '', c[6] || '']]));
   await loadStopsAround(state.here[0], state.here[1]);
   await Promise.all(state.myLines.map(bundle));
   render();
