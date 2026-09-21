@@ -15,54 +15,54 @@ use tokio::sync::Mutex;
 
 const BASE: &str = "https://nominatim.openstreetmap.org";
 const TTL: Duration = Duration::from_secs(7 * 24 * 3600);
-const INTERVALO: Duration = Duration::from_millis(1_100);
+const MIN_INTERVAL: Duration = Duration::from_millis(1_100);
 const MAX_CACHE: usize = 5_000;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct Lugar {
+pub struct Place {
     pub lat: f64,
     pub lon: f64,
     /// "Rua Voluntários da Pátria, 190", or the place's own name.
-    pub nome: String,
+    pub name: String,
     /// Neighbourhood, when known.
     pub area: String,
 }
 
 pub struct Geocoder {
     http: reqwest::Client,
-    cache: Mutex<HashMap<String, (Instant, Vec<Lugar>)>>,
-    ultimo: Mutex<Instant>,
+    cache: Mutex<HashMap<String, (Instant, Vec<Place>)>>,
+    last: Mutex<Instant>,
 }
 
 /// Lowercased, trimmed, single-spaced: the cache key for a search.
-pub fn normaliza(q: &str) -> String {
+pub fn normalize(q: &str) -> String {
     q.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-fn texto(v: &serde_json::Value, k: &str) -> String {
+fn str_field(v: &serde_json::Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
 
 /// One Nominatim result (jsonv2 with address details) to our shape.
-pub fn para_lugar(r: &serde_json::Value) -> Option<Lugar> {
+pub fn to_place(r: &serde_json::Value) -> Option<Place> {
     let lat: f64 = r.get("lat")?.as_str()?.parse().ok()?;
     let lon: f64 = r.get("lon")?.as_str()?.parse().ok()?;
     let a = r.get("address").cloned().unwrap_or_default();
-    let rua = ["road", "pedestrian", "footway", "square"].iter().map(|k| texto(&a, k)).find(|s| !s.is_empty()).unwrap_or_default();
-    let numero = texto(&a, "house_number");
-    let proprio = texto(r, "name");
-    let nome = if !proprio.is_empty() && (rua.is_empty() || texto(r, "category") != "highway" && numero.is_empty()) {
-        proprio
-    } else if !rua.is_empty() {
-        if numero.is_empty() { rua } else { format!("{rua}, {numero}") }
+    let street = ["road", "pedestrian", "footway", "square"].iter().map(|k| str_field(&a, k)).find(|s| !s.is_empty()).unwrap_or_default();
+    let number = str_field(&a, "house_number");
+    let own_name = str_field(r, "name");
+    let name = if !own_name.is_empty() && (street.is_empty() || str_field(r, "category") != "highway" && number.is_empty()) {
+        own_name
+    } else if !street.is_empty() {
+        if number.is_empty() { street } else { format!("{street}, {number}") }
     } else {
-        texto(r, "display_name").split(',').next().unwrap_or("").trim().to_string()
+        str_field(r, "display_name").split(',').next().unwrap_or("").trim().to_string()
     };
-    let area = ["suburb", "neighbourhood", "quarter", "city_district"].iter().map(|k| texto(&a, k)).find(|s| !s.is_empty()).unwrap_or_default();
-    if nome.is_empty() {
+    let area = ["suburb", "neighbourhood", "quarter", "city_district"].iter().map(|k| str_field(&a, k)).find(|s| !s.is_empty()).unwrap_or_default();
+    if name.is_empty() {
         return None;
     }
-    Some(Lugar { lat, lon, nome, area })
+    Some(Place { lat, lon, name, area })
 }
 
 impl Geocoder {
@@ -70,73 +70,73 @@ impl Geocoder {
         Geocoder {
             http,
             cache: Mutex::new(HashMap::new()),
-            ultimo: Mutex::new(Instant::now() - INTERVALO),
+            last: Mutex::new(Instant::now() - MIN_INTERVAL),
         }
     }
 
-    async fn pede(&self, url: &str) -> Result<serde_json::Value> {
+    async fn request(&self, url: &str) -> Result<serde_json::Value> {
         // Nominatim allows one request per second; queue behind the last one.
-        let mut ultimo = self.ultimo.lock().await;
-        let espera = INTERVALO.saturating_sub(ultimo.elapsed());
-        if !espera.is_zero() {
-            tokio::time::sleep(espera).await;
+        let mut last = self.last.lock().await;
+        let wait = MIN_INTERVAL.saturating_sub(last.elapsed());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
         }
         let r = self.http.get(url).header("Accept-Language", "pt-BR").send().await;
-        *ultimo = Instant::now();
-        drop(ultimo);
+        *last = Instant::now();
+        drop(last);
         let r = r.context("Nominatim unreachable")?;
         if !r.status().is_success() {
             anyhow::bail!("Nominatim returned {}", r.status());
         }
-        let corpo = r.bytes().await.context("reading Nominatim response")?;
-        Ok(serde_json::from_slice(&corpo)?)
+        let body = r.bytes().await.context("reading Nominatim response")?;
+        Ok(serde_json::from_slice(&body)?)
     }
 
-    async fn em_cache<F, Fut>(&self, chave: String, busca: F) -> Result<Vec<Lugar>>
+    async fn cached<F, Fut>(&self, key: String, search: F) -> Result<Vec<Place>>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<Vec<Lugar>>>,
+        Fut: std::future::Future<Output = Result<Vec<Place>>>,
     {
-        if let Some((t, v)) = self.cache.lock().await.get(&chave) {
+        if let Some((t, v)) = self.cache.lock().await.get(&key) {
             if t.elapsed() < TTL {
                 return Ok(v.clone());
             }
         }
-        let v = busca().await?;
+        let v = search().await?;
         let mut c = self.cache.lock().await;
         if c.len() >= MAX_CACHE {
             c.clear();
         }
-        c.insert(chave, (Instant::now(), v.clone()));
+        c.insert(key, (Instant::now(), v.clone()));
         Ok(v)
     }
 
-    pub async fn busca(&self, q: &str) -> Result<Vec<Lugar>> {
-        let q = normaliza(q);
+    pub async fn search(&self, q: &str) -> Result<Vec<Place>> {
+        let q = normalize(q);
         if q.chars().count() < 3 {
             return Ok(Vec::new());
         }
-        let chave = format!("s:{q}");
-        self.em_cache(chave, || async {
+        let key = format!("s:{q}");
+        self.cached(key, || async {
             let url = format!(
                 "{BASE}/search?format=jsonv2&addressdetails=1&limit=8&countrycodes=br&bounded=1\
                  &viewbox=-43.80,-22.74,-43.09,-23.08&q={}",
                 urlencode(&format!("{q}, Rio de Janeiro"))
             );
-            let v = self.pede(&url).await?;
-            Ok(v.as_array().map(|a| a.iter().filter_map(para_lugar).collect()).unwrap_or_default())
+            let v = self.request(&url).await?;
+            Ok(v.as_array().map(|a| a.iter().filter_map(to_place).collect()).unwrap_or_default())
         })
         .await
     }
 
-    pub async fn reverso(&self, lat: f64, lon: f64) -> Result<Option<Lugar>> {
+    pub async fn reverse(&self, lat: f64, lon: f64) -> Result<Option<Place>> {
         // Four decimals is about 11 m: close enough to share one answer.
-        let chave = format!("r:{lat:.4},{lon:.4}");
+        let key = format!("r:{lat:.4},{lon:.4}");
         let v = self
-            .em_cache(chave, || async {
+            .cached(key, || async {
                 let url = format!("{BASE}/reverse?format=jsonv2&addressdetails=1&zoom=18&lat={lat:.5}&lon={lon:.5}");
-                let v = self.pede(&url).await?;
-                Ok(para_lugar(&v).map(|mut l| {
+                let v = self.request(&url).await?;
+                Ok(to_place(&v).map(|mut l| {
                     l.lat = lat;
                     l.lon = lon;
                     l
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn queries_normalise_for_the_cache() {
-        assert_eq!(normaliza("  Rua   Voluntários  da Pátria "), "rua voluntários da pátria");
+        assert_eq!(normalize("  Rua   Voluntários  da Pátria "), "rua voluntários da pátria");
     }
 
     #[test]
@@ -174,8 +174,8 @@ mod tests {
             "display_name": "190, Rua Voluntários da Pátria, Botafogo, Rio de Janeiro",
             "address": {"house_number": "190", "road": "Rua Voluntários da Pátria", "suburb": "Botafogo"}
         });
-        let l = para_lugar(&r).unwrap();
-        assert_eq!(l.nome, "Rua Voluntários da Pátria, 190");
+        let l = to_place(&r).unwrap();
+        assert_eq!(l.name, "Rua Voluntários da Pátria, 190");
         assert_eq!(l.area, "Botafogo");
         assert!((l.lat + 22.9523).abs() < 1e-9);
     }
@@ -186,7 +186,7 @@ mod tests {
             "lat": "-22.9711", "lon": "-43.1822", "category": "amenity", "name": "Copacabana Palace",
             "address": {"road": "Avenida Atlântica", "suburb": "Copacabana"}
         });
-        assert_eq!(para_lugar(&r).unwrap().nome, "Copacabana Palace");
+        assert_eq!(to_place(&r).unwrap().name, "Copacabana Palace");
     }
 
     #[test]
@@ -195,11 +195,11 @@ mod tests {
             "lat": "-22.9", "lon": "-43.2", "category": "highway", "name": "Rua do Catete",
             "address": {"road": "Rua do Catete", "suburb": "Catete"}
         });
-        assert_eq!(para_lugar(&r).unwrap().nome, "Rua do Catete");
+        assert_eq!(to_place(&r).unwrap().name, "Rua do Catete");
     }
 
     #[test]
     fn nonsense_is_dropped() {
-        assert!(para_lugar(&serde_json::json!({"lat": "x", "lon": "1"})).is_none());
+        assert!(to_place(&serde_json::json!({"lat": "x", "lon": "1"})).is_none());
     }
 }

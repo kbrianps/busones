@@ -296,7 +296,7 @@ fn area(r: &[(f64, f64)]) -> f64 {
 }
 
 /// Douglas-Peucker, iterative, keeping both ends.
-fn simplifica(p: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
+fn simplify(p: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
     if p.len() < 3 {
         return p.to_vec();
     }
@@ -325,7 +325,7 @@ fn simplifica(p: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
     p.iter().zip(keep).filter(|(_, k)| *k).map(|(v, _)| *v).collect()
 }
 
-fn plano(v: &[(f64, f64)]) -> Vec<i32> {
+fn flatten(v: &[(f64, f64)]) -> Vec<i32> {
     let mut out = Vec::with_capacity(v.len() * 2);
     let mut last: Option<(i32, i32)> = None;
     for &(x, y) in v {
@@ -368,17 +368,17 @@ struct Tile {
 }
 
 impl Tile {
-    fn vazio(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.w.is_empty() && self.g.is_empty() && self.s.is_empty()
             && self.r0.is_empty() && self.r1.is_empty() && self.r2.is_empty()
     }
 }
 
-fn poligonos(f: &Feature, esc: f64, tol: f64, min_area: f64) -> Vec<Vec<i32>> {
+fn polygons(f: &Feature, scale: f64, tol: f64, min_area: f64) -> Vec<Vec<i32>> {
     let mut rings = Vec::new();
     let mut exterior_ok = false;
     for part in &f.parts {
-        let pts: Vec<(f64, f64)> = part.iter().map(|&(x, y)| (x as f64 * esc, y as f64 * esc)).collect();
+        let pts: Vec<(f64, f64)> = part.iter().map(|&(x, y)| (x as f64 * scale, y as f64 * scale)).collect();
         let a = area(&pts);
         // Exterior rings have positive area in tile coordinates; a hole is kept
         // only when its exterior survived.
@@ -390,7 +390,7 @@ fn poligonos(f: &Feature, esc: f64, tol: f64, min_area: f64) -> Vec<Vec<i32>> {
         } else if !exterior_ok || a.abs() < min_area {
             continue;
         }
-        let s = plano(&simplifica(&pts, tol));
+        let s = flatten(&simplify(&pts, tol));
         if s.len() >= 6 {
             rings.push(s);
         }
@@ -427,38 +427,38 @@ pub fn build(pmtiles: &Path, out: &Path) -> Result<Stats> {
 
         let mut t = Tile::default();
         for layer in &layers {
-            let esc = Q / layer.extent as f64;
+            let scale = Q / layer.extent as f64;
             let tol_area = if z >= 15 { 2.0 } else { 1.4 };
             let min_green = if z >= 15 { 120.0 } else { 60.0 };
             for f in &layer.features {
                 let kind = f.props.get("kind").map(String::as_str).unwrap_or("");
                 match (layer.name.as_str(), f.geom_type) {
                     ("water", 3) if !AGUA_FORA.contains(&kind) => {
-                        let p = poligonos(f, esc, tol_area, 20.0);
+                        let p = polygons(f, scale, tol_area, 20.0);
                         if !p.is_empty() { t.w.push(p); }
                     }
                     ("landuse" | "landcover", 3) if VERDE.contains(&kind) => {
-                        let p = poligonos(f, esc, tol_area, min_green);
+                        let p = polygons(f, scale, tol_area, min_green);
                         if !p.is_empty() { t.g.push(p); }
                     }
                     ("landuse" | "landcover", 3) if AREIA.contains(&kind) => {
-                        let p = poligonos(f, esc, tol_area, 40.0);
+                        let p = polygons(f, scale, tol_area, 40.0);
                         if !p.is_empty() { t.s.push(p); }
                     }
                     ("roads", 2) => {
-                        let classe = match kind {
+                        let road_class = match kind {
                             "highway" => 0,
                             "major_road" | "medium_road" => 1,
                             "minor_road" if z >= 13 => 2,
                             _ => continue,
                         };
-                        let mut melhor: Option<(f64, (f64, f64), f64)> = None;
+                        let mut best: Option<(f64, (f64, f64), f64)> = None;
                         for part in &f.parts {
-                            let pts: Vec<(f64, f64)> = part.iter().map(|&(px, py)| (px as f64 * esc, py as f64 * esc)).collect();
-                            let s = simplifica(&pts, 1.4);
-                            let flat = plano(&s);
+                            let pts: Vec<(f64, f64)> = part.iter().map(|&(px, py)| (px as f64 * scale, py as f64 * scale)).collect();
+                            let s = simplify(&pts, 1.4);
+                            let flat = flatten(&s);
                             if flat.len() < 4 { continue; }
-                            match classe {
+                            match road_class {
                                 0 => t.r0.push(flat),
                                 1 => t.r1.push(flat),
                                 _ => t.r2.push(flat),
@@ -467,18 +467,18 @@ pub fn build(pmtiles: &Path, out: &Path) -> Result<Stats> {
                             for w in s.windows(2) {
                                 let (a, b) = (w[0], w[1]);
                                 let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
-                                if melhor.is_none_or(|m| d > m.0) {
+                                if best.is_none_or(|m| d > m.0) {
                                     let mut ang = (b.1 - a.1).atan2(b.0 - a.0).to_degrees();
                                     if ang > 90.0 { ang -= 180.0; }
                                     if ang < -90.0 { ang += 180.0; }
-                                    melhor = Some((d, ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0), ang));
+                                    best = Some((d, ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0), ang));
                                 }
                             }
                         }
-                        if z == 15 && classe < 2 {
-                            if let (Some(name), Some((d, (mx, my), ang))) = (f.props.get("name"), melhor) {
+                        if z == 15 && road_class < 2 {
+                            if let (Some(name), Some((d, (mx, my), ang))) = (f.props.get("name"), best) {
                                 if d > 90.0 && (0.0..Q).contains(&mx) && (0.0..Q).contains(&my) {
-                                    t.l.push((mx.round() as i32, my.round() as i32, ang.round() as i32, name.clone(), classe));
+                                    t.l.push((mx.round() as i32, my.round() as i32, ang.round() as i32, name.clone(), road_class));
                                 }
                             }
                         }
@@ -504,13 +504,13 @@ pub fn build(pmtiles: &Path, out: &Path) -> Result<Stats> {
         t.l.sort_by(|a, b| a.3.cmp(&b.3));
         t.l.dedup_by(|a, b| a.3 == b.3);
 
-        if t.vazio() {
+        if t.is_empty() {
             continue;
         }
         let dir = out.join(format!("{z}/{x}"));
         std::fs::create_dir_all(&dir)?;
         let body = serde_json::to_vec(&t)?;
-        let (n, g) = grava(&dir.join(format!("{y}.json")), &body)?;
+        let (n, g) = write_gz(&dir.join(format!("{y}.json")), &body)?;
         stats.tiles[zi] += 1;
         stats.bytes += n;
         stats.gz_bytes += g;
@@ -538,13 +538,13 @@ pub fn build(pmtiles: &Path, out: &Path) -> Result<Stats> {
         .map(|(lat, lon, n, r)| serde_json::json!([(lon * 1e5).round() / 1e5, (lat * 1e5).round() / 1e5, n, r]))
         .collect();
     std::fs::create_dir_all(out)?;
-    let (n, g) = grava(&out.join("places.json"), &serde_json::to_vec(&json)?)?;
+    let (n, g) = write_gz(&out.join("places.json"), &serde_json::to_vec(&json)?)?;
     stats.bytes += n;
     stats.gz_bytes += g;
     Ok(stats)
 }
 
-fn grava(path: &Path, body: &[u8]) -> Result<(usize, usize)> {
+fn write_gz(path: &Path, body: &[u8]) -> Result<(usize, usize)> {
     std::fs::write(path, body)?;
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(9));
     enc.write_all(body)?;
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn simplification_keeps_corners_and_drops_noise() {
         let p = vec![(0.0, 0.0), (5.0, 0.1), (10.0, 0.0), (10.0, 10.0)];
-        let s = simplifica(&p, 1.0);
+        let s = simplify(&p, 1.0);
         assert_eq!(s, vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]);
     }
 }

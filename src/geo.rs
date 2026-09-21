@@ -170,8 +170,8 @@ mod tests {
     fn tiles_cover_rio() {
         let t = rio_tiles(13);
         assert!(t.len() > 100 && t.len() < 900, "{} tiles", t.len());
-        let centro = tile_of(-22.9068, -43.1729, 13);
-        assert!(t.contains(&centro));
+        let downtown = tile_of(-22.9068, -43.1729, 13);
+        assert!(t.contains(&downtown));
         let campo_grande = tile_of(-22.9, -43.56, 13);
         assert!(t.contains(&campo_grande));
     }

@@ -13,32 +13,32 @@ const API = '/run/api/v1';
 /* Address search and reverse geocoding: answered by the backend, which caches
    Nominatim (in production Caddy proxies these paths to it). */
 const GEO = '/api/v1';
-const EST = '/dist';
+const STATIC = '/dist';
 const Z = 13;
-const RAIO_PERTO = 600;
-const RECARGA_MS = 12000;
-const CENTRO = [-22.9068, -43.1729];
+const NEARBY_RADIUS = 600;
+const REFRESH_MS = 12000;
+const CITY_CENTER = [-22.9068, -43.1729];
 
 /* For the few lines the GTFS gives no colour, and lines without a route. */
-const COR_SEM_OFICIAL = '#546E7A';
+const FALLBACK_COLOR = '#546E7A';
 
 /* The badge used in lists: always the same width, so destinations line up in
    one column whatever the code ("3" or "LECD148"); the type shrinks instead. */
-function selo(l, extra = '') {
-  const s = el('span', 'selo' + (extra ? ' ' + extra : ''), l);
-  s.dataset.tam = String(Math.min(7, Math.max(4, l.length)));
-  s.style.background = corDaLinha(l);
-  s.style.color = textoDaLinha(l);
+function listBadge(l, extra = '') {
+  const s = el('span', 'badge' + (extra ? ' ' + extra : ''), l);
+  s.dataset.size = String(Math.min(7, Math.max(4, l.length)));
+  s.style.background = lineColor(l);
+  s.style.color = lineTextColor(l);
   return s;
 }
 
 /* The line badge from onibus-rj: a rounded square with the number, the type
    shrinking as the code gets longer ("474" to "LECD133"). */
-function numero(l, tag = 'div') {
-  const n = el(tag, 'numero', l);
-  n.style.setProperty('--cor', corDaLinha(l));
-  n.style.setProperty('--cor-texto', textoDaLinha(l));
-  n.dataset.tam = l.length <= 4 ? 'p' : l.length <= 6 ? 'm' : 'g';
+function lineBadge(l, tag = 'div') {
+  const n = el(tag, 'line-badge', l);
+  n.style.setProperty('--color', lineColor(l));
+  n.style.setProperty('--color-text', lineTextColor(l));
+  n.dataset.size = l.length <= 4 ? 's' : l.length <= 6 ? 'm' : 'l';
   return n;
 }
 
@@ -50,20 +50,20 @@ function el(tag, cls, txt) {
   if (txt != null) e.textContent = txt;
   return e;
 }
-function icone(nome) {
+function icon(name) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  u.setAttribute('href', '#i-' + nome);
+  u.setAttribute('href', '#i-' + name);
   s.append(u);
   return s;
 }
-const metros = m => m >= 1000 ? (m / 1000).toFixed(1).replace('.', ',') + ' km' : Math.round(m) + ' m';
-const aPe = m => `${Math.max(1, Math.round(m / 75))} min a pé`;
+const meters = m => m >= 1000 ? (m / 1000).toFixed(1).replace('.', ',') + ' km' : Math.round(m) + ' m';
+const walkTime = m => `${Math.max(1, Math.round(m / 75))} min a pé`;
 /* The incumbent writes data age as "52 seg atrás" and "1:18 atrás". */
-function atras(seg) {
-  seg = Math.max(0, Math.round(seg));
-  if (seg < 60) return `${seg} seg atrás`;
-  return `${Math.floor(seg / 60)}:${String(seg % 60).padStart(2, '0')} atrás`;
+function ago(tabs) {
+  tabs = Math.max(0, Math.round(tabs));
+  if (tabs < 60) return `${tabs} seg atrás`;
+  return `${Math.floor(tabs / 60)}:${String(tabs % 60).padStart(2, '0')} atrás`;
 }
 function distM(a, b) {
   const p = Math.PI / 180;
@@ -76,7 +76,7 @@ function tile(lat, lon, z = Z) {
   return [Math.floor((lon + 180) / 360 * n),
           Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)];
 }
-function decodifica(str) {
+function decodePolyline(str) {
   const out = [];
   let i = 0, lat = 0, lon = 0;
   while (i < str.length) {
@@ -93,70 +93,70 @@ function decodifica(str) {
 
 /* Relative times are only true if the phone's clock is; the server's Date
    header on every response corrects it. */
-let desvio = 0;
-const agoraS = () => Date.now() / 1000 + desvio;
-async function pega(url) {
+let clockSkew = 0;
+const nowS = () => Date.now() / 1000 + clockSkew;
+async function getJson(url) {
   const r = await fetch(url, { cache: 'no-cache' });
   if (!r.ok) throw new Error(`${r.status} ${url}`);
   const d = Date.parse(r.headers.get('date') || '');
   if (isFinite(d)) {
     const delta = d / 1000 - Date.now() / 1000;
-    if (Math.abs(delta) > 2) desvio = delta;
+    if (Math.abs(delta) > 2) clockSkew = delta;
   }
   return r.json();
 }
 
 /* ---------- state ---------- */
-const est = {
-  eu: [...CENTRO],
-  temLocal: false,
-  minhas: [],
-  sentido: {},
-  catalogo: [],
+const state = {
+  here: [...CITY_CENTER],
+  hasPlace: false,
+  myLines: [],
+  chosenDir: {},
+  catalog: [],
   /* Official colours: line -> [background, text]. */
-  cores: new Map(),
+  colors: new Map(),
   /* Which service runs on which date, from the GTFS calendar. */
-  calendario: null,
+  calendar: null,
   /* Lines on the road now: line -> [buses, has a route]. */
-  vivas: new Map(),
-  vivasEm: 0,
+  liveLines: new Map(),
+  liveLinesAt: 0,
   bundles: new Map(),
-  frotas: new Map(),
-  chegadas: [],
-  paradas: new Map(),
-  celulasParadas: new Set(),
-  folha: null,
-  aba: 'vivo',
-  veiculosFolha: [],
-  busca: '',
-  buscando: false,
-  balao: null,
-  ajustes: { escuro: false, rota: true, paradas: true, semSinal: true },
-  local: { modo: null, nome: '' },
+  fleets: new Map(),
+  arrivals: [],
+  stops: new Map(),
+  stopCells: new Set(),
+  sheet: null,
+  tab: 'live',
+  sheetVehicles: [],
+  query: '',
+  searching: false,
+  callout: null,
+  settings: { dark: false, route: true, stops: true, staleBuses: true },
+  place: { mode: null, name: '' },
   /* Lines in focus. Empty means every line you follow is on the map. */
-  focadas: new Set(),
+  focused: new Set(),
   freq: null,
-  escolhendoLocal: false,
-  todasParadas: null,
-  buscadoEm: 0,
-  erro: '',
+  pickingPlace: false,
+  allStops: null,
+  fetchedAt: 0,
+  errorMsg: '',
 };
 
-function salva() {
+function saveState() {
   try {
-    localStorage.setItem('busones:linhas', JSON.stringify(est.minhas));
-    localStorage.setItem('busones:sentido', JSON.stringify(est.sentido));
-    localStorage.setItem('busones:ajustes', JSON.stringify(est.ajustes));
+    localStorage.setItem('busones:lines', JSON.stringify(state.myLines));
+    localStorage.setItem('busones:directions', JSON.stringify(state.chosenDir));
+    localStorage.setItem('busones:settings', JSON.stringify(state.settings));
   } catch {}
 }
-function carrega() {
+function loadState() {
   try {
-    const l = JSON.parse(localStorage.getItem('busones:linhas') || '[]');
-    if (Array.isArray(l)) est.minhas = l.filter(x => typeof x === 'string').slice(0, 8);
-    est.sentido = JSON.parse(localStorage.getItem('busones:sentido') || '{}') || {};
-    const a = JSON.parse(localStorage.getItem('busones:ajustes') || 'null');
-    if (a) Object.assign(est.ajustes, a);
-    else est.ajustes.escuro = matchMedia('(prefers-color-scheme: dark)').matches;
+    const l = JSON.parse(localStorage.getItem('busones:lines') || '[]');
+    if (Array.isArray(l)) state.myLines = l.filter(x => typeof x === 'string').slice(0, 8);
+    state.chosenDir = JSON.parse(localStorage.getItem('busones:directions') || '{}') || {};
+    const a = JSON.parse(localStorage.getItem('busones:settings') || 'null');
+    if (a) Object.assign(state.settings, a);
+    else state.settings.dark = matchMedia('(prefers-color-scheme: dark)').matches;
   } catch {}
 }
 
@@ -168,67 +168,67 @@ function carrega() {
  * lines. Badges use it as published. The map only shifts its lightness until
  * it stands out from the background: the official grey would vanish among the
  * streets of a light map, and the navy on a dark one. */
-function corDaLinha(l) {
-  const c = est.cores.get(l);
-  return (c && c[0]) || COR_SEM_OFICIAL;
+function lineColor(l) {
+  const c = state.colors.get(l);
+  return (c && c[0]) || FALLBACK_COLOR;
 }
-function textoDaLinha(l) {
-  const c = est.cores.get(l);
+function lineTextColor(l) {
+  const c = state.colors.get(l);
   if (c && c[0] && c[1]) return c[1];
-  return luminancia(corDaLinha(l)) > 0.35 ? '#000000' : '#FFFFFF';
+  return luminance(lineColor(l)) > 0.35 ? '#000000' : '#FFFFFF';
 }
 
 const rgb = hex => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
-function luminancia(hex) {
+function luminance(hex) {
   const [r, g, b] = rgb(hex).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
-function contraste(a, b) {
-  const [x, y] = [luminancia(a), luminancia(b)].sort((p, q) => q - p);
+function contrast(a, b) {
+  const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
   return (x + 0.05) / (y + 0.05);
 }
-const realcadas = new Map();
+const contrastCache = new Map();
 /* The colour, mixed with black (on a light background) or white (on a dark
    one) in small steps until it reaches the minimum contrast. Hue is kept, so
    the grey line is still grey and the orange one still orange. */
-function realca(cor, fundo, minimo) {
-  const k = `${cor}|${fundo}|${minimo}`;
-  if (realcadas.has(k)) return realcadas.get(k);
-  let res = cor;
-  if (contraste(cor, fundo) < minimo) {
-    const alvo = luminancia(fundo) > 0.5 ? 0 : 255;
-    const base = rgb(cor);
-    res = alvo ? '#FFFFFF' : '#000000';
+function ensureContrast(color, bg, minRatio) {
+  const k = `${color}|${bg}|${minRatio}`;
+  if (contrastCache.has(k)) return contrastCache.get(k);
+  let res = color;
+  if (contrast(color, bg) < minRatio) {
+    const towards = luminance(bg) > 0.5 ? 0 : 255;
+    const base = rgb(color);
+    res = towards ? '#FFFFFF' : '#000000';
     for (let t = 0.05; t < 1; t += 0.05) {
-      const hex = '#' + base.map(v => Math.round(v + (alvo - v) * t).toString(16).padStart(2, '0')).join('');
-      if (contraste(hex, fundo) >= minimo) { res = hex; break; }
+      const hex = '#' + base.map(v => Math.round(v + (towards - v) * t).toString(16).padStart(2, '0')).join('');
+      if (contrast(hex, bg) >= minRatio) { res = hex; break; }
     }
   }
-  realcadas.set(k, res);
+  contrastCache.set(k, res);
   return res;
 }
 /* A line's colour for routes, stops and buses on the map. */
-function corNoMapa(l) {
-  return realca(corDaLinha(l), escuro() ? '#1C1D20' : '#F4F4F1', 3);
+function mapColor(l) {
+  return ensureContrast(lineColor(l), dark() ? '#1C1D20' : '#F4F4F1', 3);
 }
 /* A line's colour as text on the app's own background, as in the line menu. */
-function corLegivel(l) {
-  return realca(corDaLinha(l), escuro() ? '#202124' : '#FFFFFF', 4.5);
+function readableColor(l) {
+  return ensureContrast(lineColor(l), dark() ? '#202124' : '#FFFFFF', 4.5);
 }
 
 /* ---------- data ---------- */
 async function bundle(l) {
-  if (est.bundles.has(l)) return est.bundles.get(l);
-  const b = await pega(`${EST}/lines/${encodeURIComponent(l)}.json`).catch(() => null);
+  if (state.bundles.has(l)) return state.bundles.get(l);
+  const b = await getJson(`${STATIC}/lines/${encodeURIComponent(l)}.json`).catch(() => null);
   if (b) {
     for (const d of b.dirs) {
-      d.pts = decodifica(d.poly);
+      d.pts = decodePolyline(d.poly);
       for (const s of d.stops) {
-        if (!est.paradas.has(s[0])) est.paradas.set(s[0], { id: s[0], lat: s[1], lon: s[2], nome: s[3], sub: s[5] || '', linhas: null });
+        if (!state.stops.has(s[0])) state.stops.set(s[0], { id: s[0], lat: s[1], lon: s[2], name: s[3], sub: s[5] || '', lines: null });
       }
     }
   }
-  est.bundles.set(l, b);
+  state.bundles.set(l, b);
   return b;
 }
 
@@ -236,34 +236,34 @@ async function bundle(l) {
    search and the line menu say "3 ônibus agora" or "nenhum ônibus com sinal"
    instead of leaving the screen silent, and finds lines whose route the SMTR
    has not published. */
-async function carregaVivas(forcar) {
-  if (!forcar && Date.now() - est.vivasEm < 30000) return;
-  const l = await pega(`${API}/live-lines.json`).catch(() => null);
+async function loadLiveLines(force) {
+  if (!force && Date.now() - state.liveLinesAt < 30000) return;
+  const l = await getJson(`${API}/live-lines.json`).catch(() => null);
   if (!l) return;
-  est.vivas = new Map(l.map(([linha, n, rota]) => [linha, [n, !!rota]]));
-  est.vivasEm = Date.now();
+  state.liveLines = new Map(l.map(([line, n, route]) => [line, [n, !!route]]));
+  state.liveLinesAt = Date.now();
 }
 
-async function paradasEm(lat, lon) {
+async function loadStopsAround(lat, lon) {
   const [x, y] = tile(lat, lon);
-  const pedidos = [];
+  const requests = [];
   for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
     const k = `${x + dx}/${y + dy}`;
-    if (est.celulasParadas.has(k)) continue;
-    est.celulasParadas.add(k);
-    pedidos.push(pega(`${EST}/cells/${Z}/${k}/stops.json`).catch(() => []));
+    if (state.stopCells.has(k)) continue;
+    state.stopCells.add(k);
+    requests.push(getJson(`${STATIC}/cells/${Z}/${k}/stops.json`).catch(() => []));
   }
-  for (const l of await Promise.all(pedidos)) {
-    for (const s of l) est.paradas.set(s[0], { id: s[0], lat: s[1], lon: s[2], nome: s[3], sub: s[4] || '', linhas: s[5] });
+  for (const l of await Promise.all(requests)) {
+    for (const s of l) state.stops.set(s[0], { id: s[0], lat: s[1], lon: s[2], name: s[3], sub: s[4] || '', lines: s[5] });
   }
 }
 
 /* For one direction of a line, the stop nearest to you. */
-function paradaPerto(dir) {
+function nearestStop(dir) {
   let m = null;
   for (const s of dir.stops) {
-    const d = distM(est.eu, [s[1], s[2]]);
-    if (!m || d < m.dist) m = { id: s[0], lat: s[1], lon: s[2], nome: s[3], sub: s[5] || '', dist: d };
+    const d = distM(state.here, [s[1], s[2]]);
+    if (!m || d < m.dist) m = { id: s[0], lat: s[1], lon: s[2], name: s[3], sub: s[5] || '', dist: d };
   }
   return m;
 }
@@ -271,64 +271,64 @@ function paradaPerto(dir) {
 /* The direction a followed line is shown in: the one you last picked, or the
    one whose stop is closest to you. Lá vem hides this behind "mudar sentido";
    here it is always written on screen. */
-function dirAtual(l) {
-  const b = est.bundles.get(l);
+function currentDir(l) {
+  const b = state.bundles.get(l);
   if (!b || !b.dirs.length) return null;
-  const pedido = est.sentido[l];
-  const d = b.dirs.find(x => x.headsign === pedido);
+  const requested = state.chosenDir[l];
+  const d = b.dirs.find(x => x.headsign === requested);
   if (d) return d;
-  return [...b.dirs].sort((a, c) => (paradaPerto(a)?.dist ?? 1e9) - (paradaPerto(c)?.dist ?? 1e9))[0];
+  return [...b.dirs].sort((a, c) => (nearestStop(a)?.dist ?? 1e9) - (nearestStop(c)?.dist ?? 1e9))[0];
 }
 
-async function atualiza() {
+async function refresh() {
   try {
-    const cels = new Set();
-    const add = (la, lo) => { const [x, y] = tile(la, lo); cels.add(`${x}/${y}`); };
-    add(est.eu[0], est.eu[1]);
-    for (const l of est.minhas) {
+    const cells = new Set();
+    const add = (la, lo) => { const [x, y] = tile(la, lo); cells.add(`${x}/${y}`); };
+    add(state.here[0], state.here[1]);
+    for (const l of state.myLines) {
       const b = await bundle(l);
-      if (b) for (const d of b.dirs) { const p = paradaPerto(d); if (p) add(p.lat, p.lon); }
+      if (b) for (const d of b.dirs) { const p = nearestStop(d); if (p) add(p.lat, p.lon); }
     }
-    if (est.folha) add(est.folha.lat, est.folha.lon);
+    if (state.sheet) add(state.sheet.lat, state.sheet.lon);
 
-    const pedidosFolha = [];
-    if (est.folha) {
-      const [x, y] = tile(est.folha.lat, est.folha.lon);
+    const sheetRequests = [];
+    if (state.sheet) {
+      const [x, y] = tile(state.sheet.lat, state.sheet.lon);
       for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++)
-        pedidosFolha.push(pega(`${API}/cells/${Z}/${x + dx}/${y + dy}/vehicles.json`).catch(() => []));
+        sheetRequests.push(getJson(`${API}/cells/${Z}/${x + dx}/${y + dy}/vehicles.json`).catch(() => []));
     }
-    const [cheg, frotas, vf] = await Promise.all([
-      Promise.all([...cels].map(k => pega(`${API}/cells/${Z}/${k}/arrivals.json`).catch(() => []))),
-      Promise.all(est.minhas.map(l => pega(`${API}/lines/${encodeURIComponent(l)}.json`).catch(() => []))),
-      Promise.all(pedidosFolha),
-      carregaVivas(),
+    const [arrs, fleets, vf] = await Promise.all([
+      Promise.all([...cells].map(k => getJson(`${API}/cells/${Z}/${k}/arrivals.json`).catch(() => []))),
+      Promise.all(state.myLines.map(l => getJson(`${API}/lines/${encodeURIComponent(l)}.json`).catch(() => []))),
+      Promise.all(sheetRequests),
+      loadLiveLines(),
     ]);
-    est.chegadas = cheg.flat();
-    est.minhas.forEach((l, i) => est.frotas.set(l, frotas[i].map(v => ({ ...v, line: l }))));
-    est.veiculosFolha = vf.flat();
-    est.buscadoEm = Date.now();
-    est.erro = '';
+    state.arrivals = arrs.flat();
+    state.myLines.forEach((l, i) => state.fleets.set(l, fleets[i].map(v => ({ ...v, line: l }))));
+    state.sheetVehicles = vf.flat();
+    state.fetchedAt = Date.now();
+    state.errorMsg = '';
   } catch {
-    est.erro = 'Sem conexão';
+    state.errorMsg = 'Sem conexão';
   }
-  desenha();
+  render();
 }
 
 /* ---------- time ---------- */
-function faixa(a) {
-  const passou = agoraS() - a[6];
-  const lo = Math.max(0, a[8] - passou) / 60;
-  const hi = Math.max(0, a[9] - passou) / 60;
-  if (a[5] <= 150 || hi <= 1.2) return { chegando: true };
+function etaRange(a) {
+  const elapsed = nowS() - a[6];
+  const lo = Math.max(0, a[8] - elapsed) / 60;
+  const hi = Math.max(0, a[9] - elapsed) / 60;
+  if (a[5] <= 150 || hi <= 1.2) return { arriving: true };
   const l = Math.max(1, Math.floor(lo));
   return { l, h: Math.max(l + 1, Math.ceil(hi)) };
 }
-const textoFaixa = f => f.chegando ? 'chegando' : `em ${f.l} a ${f.h} min`;
+const rangeText = f => f.arriving ? 'chegando' : `em ${f.l} a ${f.h} min`;
 
-function chegadasEm(stopId, linha, headsign) {
-  return est.chegadas
-    .filter(a => a[0] === stopId && (!linha || a[1] === linha) && (!headsign || a[2] === headsign))
-    .sort((x, y) => (x[8] + x[9]) / 2 - (x[6] - agoraS()) - ((y[8] + y[9]) / 2 - (y[6] - agoraS())));
+function arrivalsAt(stopId, line, headsign) {
+  return state.arrivals
+    .filter(a => a[0] === stopId && (!line || a[1] === line) && (!headsign || a[2] === headsign))
+    .sort((x, y) => (x[8] + x[9]) / 2 - (x[6] - nowS()) - ((y[8] + y[9]) / 2 - (y[6] - nowS())));
 }
 
 /* ---------- day type ----------
@@ -336,67 +336,67 @@ function chegadasEm(stopId, linha, headsign) {
  * for none. Always in Rio's time zone, whatever the phone is set to, and
  * corrected for a wrong device clock. Holidays come from the GTFS calendar,
  * where the SMTR runs the Sunday service. */
-const NOMES_DIA = ['dia útil', 'sábado', 'domingo'];
-const SEMANA = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const relogioRio = new Intl.DateTimeFormat('en-US', {
+const DAY_NAMES = ['dia útil', 'sábado', 'domingo'];
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const rioClock = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
   // hour12 rather than hourCycle, which old WebViews ignore; some of them say
   // "24" at midnight, hence the % 24 below.
   hour: '2-digit', hour12: false, weekday: 'short',
 });
-let diaCache = { em: -1, v: null };
+let dayCache = { at: -1, v: null };
 
-function tipoDia() {
+function dayType() {
   // Asked hundreds of times per render by the search; the answer changes at
   // most once a minute.
-  const minuto = Math.floor(agoraS() / 60);
-  if (diaCache.em === minuto && diaCache.v) return diaCache.v;
-  const p = Object.fromEntries(relogioRio.formatToParts(new Date(agoraS() * 1000)).map(x => [x.type, x.value]));
+  const minute = Math.floor(nowS() / 60);
+  if (dayCache.at === minute && dayCache.v) return dayCache.v;
+  const p = Object.fromEntries(rioClock.formatToParts(new Date(nowS() * 1000)).map(x => [x.type, x.value]));
   const data = `${p.year}${p.month}${p.day}`;
-  const semana = SEMANA.indexOf(p.weekday);
-  const hora = Number(p.hour) % 24;
-  const c = est.calendario;
+  const weekday = WEEKDAYS.indexOf(p.weekday);
+  const hour = Number(p.hour) % 24;
+  const c = state.calendar;
   let v;
-  if (c && data in c.exceptions) v = { svc: c.exceptions[data], feriado: true, hora };
-  else v = { svc: c ? c.weekdays[semana] : semana === 0 ? 2 : semana === 6 ? 1 : 0, feriado: false, hora };
-  diaCache = { em: minuto, v };
+  if (c && data in c.exceptions) v = { svc: c.exceptions[data], holiday: true, hour };
+  else v = { svc: c ? c.weekdays[weekday] : weekday === 0 ? 2 : weekday === 6 ? 1 : 0, holiday: false, hour };
+  dayCache = { at: minute, v };
   return v;
 }
 
 /* Headway in minutes for this hour from a list of [svc, from, to, minutes]
    runs, or null when nothing runs now. */
-function freqNaHora(runs) {
+function headwayFor(runs) {
   if (!runs) return null;
-  const { svc, hora } = tipoDia();
-  const f = runs.find(x => x[0] === svc && hora >= x[1] && hora < x[2]);
+  const { svc, hour } = dayType();
+  const f = runs.find(x => x[0] === svc && hour >= x[1] && hour < x[2]);
   return f ? f[3] : null;
 }
 
 /* Scheduled headway for this hour, from the published frequencies. */
-function intervaloAgora(dir) {
-  return dir ? freqNaHora(dir.freq) : null;
+function dirHeadwayNow(dir) {
+  return dir ? headwayFor(dir.freq) : null;
 }
 
 /* ---------- left rail ---------- */
-function desenhaTrilho() {
-  const t = $('#trilho');
+function renderRail() {
+  const t = $('#rail');
   t.textContent = '';
   // Below every line, a last badge that clears them all. The rail stacks
   // upward, so the first child is the one at the bottom.
-  if (est.minhas.length) {
-    const x = el('button', 'numero limpar', '×');
+  if (state.myLines.length) {
+    const x = el('button', 'line-badge clear', '×');
     x.setAttribute('aria-label', 'Remover todas as linhas');
     x.title = 'Remover todas as linhas';
-    x.onclick = e => { e.stopPropagation(); removeTodas(); };
+    x.onclick = e => { e.stopPropagation(); removeAll(); };
     t.append(x);
   }
-  for (const l of est.minhas) {
-    const c = numero(l, 'button');
-    if (est.focadas.has(l)) c.classList.add('ativo');
-    else if (est.focadas.size) c.classList.add('apagado');
+  for (const l of state.myLines) {
+    const c = lineBadge(l, 'button');
+    if (state.focused.has(l)) c.classList.add('active');
+    else if (state.focused.size) c.classList.add('dimmed');
     c.setAttribute('aria-label', `Linha ${l}, opções`);
     c.setAttribute('aria-haspopup', 'menu');
-    c.onclick = e => { e.stopPropagation(); abreMenuLinha(l, c); };
+    c.onclick = e => { e.stopPropagation(); openLineMenu(l, c); };
     t.append(c);
   }
 }
@@ -404,358 +404,358 @@ function desenhaTrilho() {
 /* ---------- line menu, as in onibus-rj ----------
  * Tapping a line's badge opens a small menu beside it: show only this line,
  * pick the direction you ride, see the times at your stop, or remove it. */
-function abreMenuLinha(l, ancora) {
-  fechaMenu();
-  const m = el('div', 'menu-linha');
+function openLineMenu(l, anchor) {
+  closeMenu();
+  const m = el('div', 'line-menu');
   m.id = 'menu';
   m.setAttribute('role', 'menu');
-  m.style.setProperty('--cor', corLegivel(l));
-  const item = (txt, acao, extra) => {
+  m.style.setProperty('--color', readableColor(l));
+  const item = (txt, action, extra) => {
     const b = el('button', extra || '', txt);
     b.setAttribute('role', 'menuitem');
-    b.onclick = () => { fechaMenu(); acao(); };
+    b.onclick = () => { closeMenu(); action(); };
     m.append(b);
     return b;
   };
-  const estado = estadoLinha(l);
-  if (estado) m.append(el('div', 'menu-estado' + (estado.aviso ? ' aviso' : ''), estado.txt));
+  const lineState = lineStatus(l);
+  if (lineState) m.append(el('div', 'menu-status' + (lineState.warning ? ' warning' : ''), lineState.txt));
   // Focus is a set: several lines can be in focus at once.
-  if (est.minhas.length > 1) {
-    item(est.focadas.has(l) ? 'Tirar o foco desta linha' : 'Focar nesta linha', () => focaLinha(l), 'so');
-    if (est.focadas.size && !(est.focadas.size === 1 && est.focadas.has(l))) {
-      item('Mostrar todas as linhas', () => { est.focadas.clear(); desenha(); });
+  if (state.myLines.length > 1) {
+    item(state.focused.has(l) ? 'Tirar o foco desta linha' : 'Focar nesta linha', () => toggleFocus(l), 'solo');
+    if (state.focused.size && !(state.focused.size === 1 && state.focused.has(l))) {
+      item('Mostrar todas as linhas', () => { state.focused.clear(); render(); });
     }
   }
-  const b = est.bundles.get(l);
-  const atual = dirAtual(l);
+  const b = state.bundles.get(l);
+  const current = currentDir(l);
   if (b) {
-    const vistos = new Set();
+    const seen = new Set();
     for (const d of b.dirs) {
-      if (vistos.has(d.headsign)) continue;
-      vistos.add(d.headsign);
-      const escolhido = atual && atual.headsign === d.headsign;
-      item(`${escolhido ? '✓ ' : ''}Indo para ${d.headsign}`, () => {
-        est.sentido[l] = d.headsign;
-        salva();
-        desenha();
-        atualiza();
-      }, escolhido ? 'ativo' : '');
+      if (seen.has(d.headsign)) continue;
+      seen.add(d.headsign);
+      const chosen = current && current.headsign === d.headsign;
+      item(`${chosen ? '✓ ' : ''}Indo para ${d.headsign}`, () => {
+        state.chosenDir[l] = d.headsign;
+        saveState();
+        render();
+        refresh();
+      }, chosen ? 'active' : '');
     }
   }
-  item('Remover linha', () => segue(l, false), 'perigo');
+  item('Remover linha', () => follow(l, false), 'danger');
 
   document.body.append(m);
-  const r = ancora.getBoundingClientRect();
+  const r = anchor.getBoundingClientRect();
   m.style.left = Math.min(innerWidth - m.offsetWidth - 8, r.right + 10) + 'px';
   m.style.top = '0px';
   // Measured at its final width; near the bottom it opens upward and the
   // arrow still points at the badge that was tapped.
   const h = m.offsetHeight;
-  const meio = r.top + r.height / 2;
-  const top = Math.max(8, Math.min(innerHeight - h - 8, meio - 22));
+  const mid = r.top + r.height / 2;
+  const top = Math.max(8, Math.min(innerHeight - h - 8, mid - 22));
   m.style.top = top + 'px';
-  m.style.setProperty('--seta', `${Math.max(10, Math.min(h - 22, meio - top - 6))}px`);
-  setTimeout(() => addEventListener('pointerdown', fechaMenuFora, { once: true }), 0);
+  m.style.setProperty('--arrow', `${Math.max(10, Math.min(h - 22, mid - top - 6))}px`);
+  setTimeout(() => addEventListener('pointerdown', closeMenuOutside, { once: true }), 0);
 }
-function fechaMenuFora(e) { if (!e.target.closest('#menu')) fechaMenu(); }
-function fechaMenu() { const m = $('#menu'); if (m) m.remove(); }
+function closeMenuOutside(e) { if (!e.target.closest('#menu')) closeMenu(); }
+function closeMenu() { const m = $('#menu'); if (m) m.remove(); }
 
 /* ---------- stop sheet ---------- */
-async function abreFolha(p) {
-  est.folha = { id: p.id, lat: p.lat, lon: p.lon, nome: p.nome, sub: p.sub };
-  est.aba = 'vivo';
-  est.balao = null;
-  fechaBusca();
-  $('#folha').hidden = false;
-  $('#folha').classList.remove('alta');
-  document.body.classList.add('folha-aberta');
-  desenha();
-  await paradasEm(p.lat, p.lon);
-  await atualiza();
-  enquadraFolha();
+async function openSheet(p) {
+  state.sheet = { id: p.id, lat: p.lat, lon: p.lon, name: p.name, sub: p.sub };
+  state.tab = 'live';
+  state.callout = null;
+  closeSearch();
+  $('#sheet').hidden = false;
+  $('#sheet').classList.remove('tall');
+  document.body.classList.add('sheet-open');
+  render();
+  await loadStopsAround(p.lat, p.lon);
+  await refresh();
+  fitSheet();
 }
 
 /* The stop, and the first few buses on their way to it, above the sheet. */
-function enquadraFolha() {
-  if (!est.folha) return;
-  const pts = [[est.folha.lat, est.folha.lon]];
-  const todos = [...est.veiculosFolha, ...[...est.frotas.values()].flat()];
-  for (const a of chegadasEm(est.folha.id).slice(0, 4)) {
-    const v = todos.find(x => x.id === a[7]);
+function fitSheet() {
+  if (!state.sheet) return;
+  const pts = [[state.sheet.lat, state.sheet.lon]];
+  const allBuses = [...state.sheetVehicles, ...[...state.fleets.values()].flat()];
+  for (const a of arrivalsAt(state.sheet.id).slice(0, 4)) {
+    const v = allBuses.find(x => x.id === a[7]);
     if (v && a[5] < 3000) pts.push([v.lat, v.lon]);
   }
-  enquadraPontos(pts);
-  desenhaMapa();
+  fitPoints(pts);
+  drawMap();
 }
-function fechaFolha() {
-  est.folha = null;
-  est.veiculosFolha = [];
-  $('#folha').hidden = true;
-  document.body.classList.remove('folha-aberta');
-  desenha();
+function closeSheet() {
+  state.sheet = null;
+  state.sheetVehicles = [];
+  $('#sheet').hidden = true;
+  document.body.classList.remove('sheet-open');
+  render();
 }
 
-function linhaHora(grupo) {
-  const [primeiro, ...resto] = grupo.lista;
-  const f = faixa(primeiro);
-  const velho = agoraS() - primeiro[6] > 90;
-  const row = el('div', 'hora');
+function arrivalRow(group) {
+  const [first, ...rest] = group.list;
+  const f = etaRange(first);
+  const stale = nowS() - first[6] > 90;
+  const row = el('div', 'arrival');
   row.setAttribute('role', 'button');
   row.tabIndex = 0;
 
-  const badge = selo(grupo.linha, 'hora-selo');
-  const destino = el('div', 'hora-destino', grupo.destino);
-  const meta = el('div', 'hora-meta');
-  const est_ = el('button', 'est');
-  const seguida = est.minhas.includes(grupo.linha);
-  est_.append(icone(seguida ? 'estrela' : 'estrela-vazia'));
-  est_.setAttribute('aria-label', seguida ? `Parar de acompanhar ${grupo.linha}` : `Acompanhar ${grupo.linha}`);
-  est_.onclick = e => { e.stopPropagation(); segue(grupo.linha, !seguida, grupo.destino); };
-  const onde = primeiro[4] === 0 ? `a ${metros(primeiro[5])}`
-    : `${primeiro[4] === 1 ? '1 parada' : primeiro[4] + ' paradas'} · ${metros(primeiro[5])}`;
-  meta.append(est_, el('span', '', onde));
+  const badge = listBadge(group.line, 'arrival-badge');
+  const destination = el('div', 'arrival-dest', group.destination);
+  const meta = el('div', 'arrival-meta');
+  const starBtn = el('button', 'star-btn');
+  const followed = state.myLines.includes(group.line);
+  starBtn.append(icon(followed ? 'star' : 'star-empty'));
+  starBtn.setAttribute('aria-label', followed ? `Parar de acompanhar ${group.line}` : `Acompanhar ${group.line}`);
+  starBtn.onclick = e => { e.stopPropagation(); follow(group.line, !followed, group.destination); };
+  const where = first[4] === 0 ? `a ${meters(first[5])}`
+    : `${first[4] === 1 ? '1 parada' : first[4] + ' paradas'} · ${meters(first[5])}`;
+  meta.append(starBtn, el('span', '', where));
 
-  const tempo = el('div', 'hora-tempo' + (velho ? ' velho' : ''));
-  const g = el('span', 'grande' + (f.chegando ? ' agora' : ''));
-  if (f.chegando) g.append(el('b', '', 'chegando'));
+  const timeEl = el('div', 'arrival-time' + (stale ? ' stale' : ''));
+  const g = el('span', 'big' + (f.arriving ? ' now' : ''));
+  if (f.arriving) g.append(el('b', '', 'chegando'));
   else g.append(el('b', '', `${f.l}`), el('i', '', 'a'), el('b', '', `${f.h}`), el('i', '', 'min'));
-  if (!velho) g.append(icone('sinal'));
-  tempo.append(g);
-  if (resto.length) {
-    const r = faixa(resto[0]);
-    tempo.append(el('small', '', r.chegando ? 'depois · chegando' : `depois · ${r.l} a ${r.h} min`));
+  if (!stale) g.append(icon('signal'));
+  timeEl.append(g);
+  if (rest.length) {
+    const r = etaRange(rest[0]);
+    timeEl.append(el('small', '', r.arriving ? 'depois · chegando' : `depois · ${r.l} a ${r.h} min`));
   } else {
-    tempo.append(el('small', '', velho ? `GPS ${atras(agoraS() - primeiro[6])}` : ' '));
+    timeEl.append(el('small', '', stale ? `GPS ${ago(nowS() - first[6])}` : ' '));
   }
 
-  row.append(badge, destino, tempo, meta);
-  row.onclick = () => { est.sentido[grupo.linha] = grupo.destino; segue(grupo.linha, true, grupo.destino); enquadraLinha(grupo.linha); desenha(); };
+  row.append(badge, destination, timeEl, meta);
+  row.onclick = () => { state.chosenDir[group.line] = group.destination; follow(group.line, true, group.destination); fitLine(group.line); render(); };
   return row;
 }
 
-async function desenhaFolha() {
-  const box = $('#folha-conteudo');
-  if (!est.folha) { box.textContent = ''; return; }
-  const p = est.folha;
+async function renderSheet() {
+  const box = $('#sheet-content');
+  if (!state.sheet) { box.textContent = ''; return; }
+  const p = state.sheet;
   box.textContent = '';
 
-  const rot = el('div', 'folha-rotulo');
-  rot.append(el('span', '', 'HORÁRIOS DOS ÔNIBUS'));
-  const fechar = el('button', 'folha-fechar');
-  fechar.append(icone('fechar'));
-  fechar.setAttribute('aria-label', 'Fechar');
-  fechar.onclick = fechaFolha;
-  rot.append(fechar);
-  box.append(rot);
+  const sheetLabel = el('div', 'sheet-label');
+  sheetLabel.append(el('span', '', 'HORÁRIOS DOS ÔNIBUS'));
+  const closeBtn = el('button', 'sheet-close');
+  closeBtn.append(icon('close'));
+  closeBtn.setAttribute('aria-label', 'Fechar');
+  closeBtn.onclick = closeSheet;
+  sheetLabel.append(closeBtn);
+  box.append(sheetLabel);
 
-  const cab = el('div', 'estacao');
-  const ic = el('div', 'estacao-icone');
-  ic.append(icone('bus'));
-  const nomes = el('div');
-  nomes.append(el('div', 'estacao-nome', p.nome));
-  const dist = distM(est.eu, [p.lat, p.lon]);
-  nomes.append(el('div', 'estacao-sub', [p.sub, `${aPe(dist)} · ${metros(dist)}`].filter(Boolean).join(' · ')));
-  cab.append(ic, nomes);
-  box.append(cab);
+  const head = el('div', 'station');
+  const ic = el('div', 'station-icon');
+  ic.append(icon('bus'));
+  const names = el('div');
+  names.append(el('div', 'station-name', p.name));
+  const dist = distM(state.here, [p.lat, p.lon]);
+  names.append(el('div', 'station-sub', [p.sub, `${walkTime(dist)} · ${meters(dist)}`].filter(Boolean).join(' · ')));
+  head.append(ic, names);
+  box.append(head);
 
-  const seg = el('div', 'segmentos');
-  const bVivo = el('button');
-  bVivo.append(el('span', 'ponto-vivo'), document.createTextNode('Tempo real'));
-  const bTab = el('button', '', 'Tabela de horários');
-  bVivo.setAttribute('aria-pressed', est.aba === 'vivo');
-  bTab.setAttribute('aria-pressed', est.aba === 'tabela');
-  bVivo.onclick = () => { est.aba = 'vivo'; desenhaFolha(); };
-  bTab.onclick = () => { est.aba = 'tabela'; desenhaFolha(); };
-  seg.append(bVivo, bTab);
-  box.append(seg);
+  const tabs = el('div', 'segments');
+  const bLive = el('button');
+  bLive.append(el('span', 'live-dot'), document.createTextNode('Tempo real'));
+  const bTable = el('button', '', 'Tabela de horários');
+  bLive.setAttribute('aria-pressed', state.tab === 'live');
+  bTable.setAttribute('aria-pressed', state.tab === 'timetable');
+  bLive.onclick = () => { state.tab = 'live'; renderSheet(); };
+  bTable.onclick = () => { state.tab = 'timetable'; renderSheet(); };
+  tabs.append(bLive, bTable);
+  box.append(tabs);
 
-  if (est.aba === 'vivo') {
-    const grupos = new Map();
-    for (const a of chegadasEm(p.id)) {
+  if (state.tab === 'live') {
+    const groups = new Map();
+    for (const a of arrivalsAt(p.id)) {
       const k = a[1] + '\u0000' + a[2];
-      if (!grupos.has(k)) grupos.set(k, { linha: a[1], destino: a[2], lista: [] });
-      grupos.get(k).lista.push(a);
+      if (!groups.has(k)) groups.set(k, { line: a[1], destination: a[2], list: [] });
+      groups.get(k).list.push(a);
     }
-    if (!grupos.size) {
-      box.append(el('div', 'vazio', est.buscadoEm
+    if (!groups.size) {
+      box.append(el('div', 'empty', state.fetchedAt
         ? 'Nenhum ônibus a caminho desta parada agora. Veja na tabela de quanto em quanto tempo cada linha passa.'
         : 'Carregando…'));
     }
-    for (const g of grupos.values()) box.append(linhaHora(g));
-    box.append(el('p', 'nota',
+    for (const g of groups.values()) box.append(arrivalRow(g));
+    box.append(el('p', 'note',
       '* Tempos estimados pela velocidade atual dos ônibus de cada linha. Podem variar com o trânsito.'));
   } else {
-    await desenhaTabela(box, p);
+    await renderTimetable(box, p);
   }
 }
 
-async function desenhaTabela(box, p) {
-  const info = est.paradas.get(p.id);
-  const linhas = info && info.linhas ? info.linhas : [...new Set(est.chegadas.filter(a => a[0] === p.id).map(a => a[1]))];
-  if (!linhas.length) { box.append(el('div', 'vazio', 'Sem horários publicados para esta parada.')); return; }
-  const lista = el('div');
-  box.append(lista);
-  const dia = tipoDia();
-  const svc = dia.svc;
-  const nomeDia = svc == null ? null : NOMES_DIA[svc];
-  for (const l of linhas.slice(0, 30)) {
+async function renderTimetable(box, p) {
+  const info = state.stops.get(p.id);
+  const lines = info && info.lines ? info.lines : [...new Set(state.arrivals.filter(a => a[0] === p.id).map(a => a[1]))];
+  if (!lines.length) { box.append(el('div', 'empty', 'Sem horários publicados para esta parada.')); return; }
+  const list = el('div');
+  box.append(list);
+  const day = dayType();
+  const svc = day.svc;
+  const dayName = svc == null ? null : DAY_NAMES[svc];
+  for (const l of lines.slice(0, 30)) {
     const b = await bundle(l);
-    if (!b || est.aba !== 'tabela' || est.folha?.id !== p.id) continue;
+    if (!b || state.tab !== 'timetable' || state.sheet?.id !== p.id) continue;
     for (const dir of b.dirs) {
       if (!dir.stops.some(s => s[0] === p.id)) continue;
-      const bloco = el('div', 'freq-linha');
-      const topo = el('div', 'freq-topo');
-      topo.append(selo(l), el('b', '', dir.headsign));
-      const iv = intervaloAgora(dir);
-      topo.append(el('span', 'freq-agora', iv ? `a cada ~${iv} min` : 'sem serviço agora'));
-      bloco.append(topo);
-      const faixas = el('div', 'freq-faixas');
-      const h = dia.hora;
+      const block = el('div', 'freq-line');
+      const topRow = el('div', 'freq-top');
+      topRow.append(listBadge(l), el('b', '', dir.headsign));
+      const iv = dirHeadwayNow(dir);
+      topRow.append(el('span', 'freq-now', iv ? `a cada ~${iv} min` : 'sem serviço agora'));
+      block.append(topRow);
+      const ranges = el('div', 'freq-ranges');
+      const h = day.hour;
       for (const f of dir.freq.filter(x => x[0] === svc)) {
-        const s = el('span', h >= f[1] && h < f[2] ? 'atual' : '', `${f[1]}h às ${f[2]}h ~${f[3]} min`);
-        faixas.append(s);
+        const s = el('span', h >= f[1] && h < f[2] ? 'current' : '', `${f[1]}h às ${f[2]}h ~${f[3]} min`);
+        ranges.append(s);
       }
-      if (!faixas.children.length) faixas.append(el('span', '', nomeDia ? `sem serviço em ${nomeDia}` : 'sem serviço hoje'));
-      bloco.append(faixas);
-      lista.append(bloco);
+      if (!ranges.children.length) ranges.append(el('span', '', dayName ? `sem serviço em ${dayName}` : 'sem serviço hoje'));
+      block.append(ranges);
+      list.append(block);
     }
   }
-  const nota = !nomeDia ? '* A SMTR não publicou serviço para hoje.'
-    : dia.feriado ? `* Hoje é feriado: vale o intervalo médio publicado pela SMTR para ${nomeDia}. Os horários podem variar com o trânsito.`
-    : `* Intervalo médio publicado pela SMTR para ${nomeDia}. Os horários podem variar com o trânsito.`;
-  box.append(el('p', 'nota', nota));
+  const note = !dayName ? '* A SMTR não publicou serviço para hoje.'
+    : day.holiday ? `* Hoje é feriado: vale o intervalo médio publicado pela SMTR para ${dayName}. Os horários podem variar com o trânsito.`
+    : `* Intervalo médio publicado pela SMTR para ${dayName}. Os horários podem variar com o trânsito.`;
+  box.append(el('p', 'note', note));
 }
 
-function ligaFolha() {
-  const pega = $('#pega');
-  const f = $('#folha');
-  let ini = null;
-  pega.addEventListener('pointerdown', e => {
-    ini = { y: e.clientY, h: f.getBoundingClientRect().height, mov: 0 };
-    pega.setPointerCapture(e.pointerId);
-    f.classList.add('arrastando');
+function wireSheet() {
+  const getJson = $('#grabber');
+  const f = $('#sheet');
+  let drag = null;
+  getJson.addEventListener('pointerdown', e => {
+    drag = { y: e.clientY, h: f.getBoundingClientRect().height, mov: 0 };
+    getJson.setPointerCapture(e.pointerId);
+    f.classList.add('dragging');
   });
-  pega.addEventListener('pointermove', e => {
-    if (!ini) return;
-    ini.mov = e.clientY - ini.y;
-    f.style.height = Math.max(120, ini.h - ini.mov) + 'px';
+  getJson.addEventListener('pointermove', e => {
+    if (!drag) return;
+    drag.mov = e.clientY - drag.y;
+    f.style.height = Math.max(120, drag.h - drag.mov) + 'px';
   });
-  pega.addEventListener('pointerup', () => {
-    if (!ini) return;
-    f.classList.remove('arrastando');
+  getJson.addEventListener('pointerup', () => {
+    if (!drag) return;
+    f.classList.remove('dragging');
     f.style.height = '';
-    if (ini.mov > 120) fechaFolha();
-    else if (ini.mov < -40) f.classList.add('alta');
-    else if (ini.mov > 40) f.classList.remove('alta');
-    else if (Math.abs(ini.mov) < 6) f.classList.toggle('alta');
-    ini = null;
+    if (drag.mov > 120) closeSheet();
+    else if (drag.mov < -40) f.classList.add('tall');
+    else if (drag.mov > 40) f.classList.remove('tall');
+    else if (Math.abs(drag.mov) < 6) f.classList.toggle('tall');
+    drag = null;
   });
 }
 
 /* ---------- search ---------- */
-function abreBusca() {
-  est.buscando = true;
-  document.body.classList.add('buscando');
-  if (!est.freq) carregaFreq().then(() => { if (est.buscando) desenhaSugestoes(); });
-  carregaVivas().then(() => { if (est.buscando) desenhaSugestoes(); });
-  est.balao = null;
-  $('#sugestoes').hidden = false;
-  const ic = $('#barra-icone');
+function openSearch() {
+  state.searching = true;
+  document.body.classList.add('searching');
+  if (!state.freq) loadFreq().then(() => { if (state.searching) renderSuggestions(); });
+  loadLiveLines().then(() => { if (state.searching) renderSuggestions(); });
+  state.callout = null;
+  $('#suggestions').hidden = false;
+  const ic = $('#bar-icon');
   ic.textContent = '';
-  ic.append(icone('voltar'));
+  ic.append(icon('back'));
   ic.setAttribute('aria-label', 'Fechar busca');
-  desenhaSugestoes();
+  renderSuggestions();
 }
-function fechaBusca() {
-  if (!est.buscando) return;
-  est.buscando = false;
-  document.body.classList.remove('buscando');
-  est.busca = '';
-  $('#campo').value = '';
-  $('#campo').blur();
-  $('#sugestoes').hidden = true;
-  const ic = $('#barra-icone');
+function closeSearch() {
+  if (!state.searching) return;
+  state.searching = false;
+  document.body.classList.remove('searching');
+  state.query = '';
+  $('#search-field').value = '';
+  $('#search-field').blur();
+  $('#suggestions').hidden = true;
+  const ic = $('#bar-icon');
   ic.textContent = '';
-  ic.append(icone('bus'));
+  ic.append(icon('bus'));
   ic.setAttribute('aria-label', 'Buscar linha');
 }
 
-function origemDestino(c) {
+function routeName(c) {
   // "Irajá - Castelo" reads as "Irajá x Castelo", the way the incumbent lists lines.
   return (c[1] || c[3].join(' - ')).replace(/\s+-\s+/g, ' x ');
 }
 
-function sug(nome, legenda, tituloFixo) {
-  const c = est.catalogo.find(x => x[0] === nome);
-  const row = el('div', 'sug');
+function suggestionRow(name, caption, fixedTitle) {
+  const c = state.catalog.find(x => x[0] === name);
+  const row = el('div', 'suggestion');
   row.setAttribute('role', 'button');
   row.tabIndex = 0;
-  const seguida = est.minhas.includes(nome);
-  const e = el('button', 'sug-estrela');
-  e.append(icone(seguida ? 'estrela' : 'estrela-vazia'));
-  e.setAttribute('aria-label', seguida ? `Parar de acompanhar ${nome}` : `Acompanhar ${nome}`);
-  e.onclick = ev => { ev.stopPropagation(); segue(nome, !seguida); desenhaSugestoes(); };
-  const badge = selo(nome);
-  const t = el('div', 'sug-txt');
-  const titulo = el('div');
-  const txt = tituloFixo || (c ? origemDestino(c) : nome);
-  const q = est.busca.trim();
+  const followed = state.myLines.includes(name);
+  const e = el('button', 'suggestion-star');
+  e.append(icon(followed ? 'star' : 'star-empty'));
+  e.setAttribute('aria-label', followed ? `Parar de acompanhar ${name}` : `Acompanhar ${name}`);
+  e.onclick = ev => { ev.stopPropagation(); follow(name, !followed); renderSuggestions(); };
+  const badge = listBadge(name);
+  const t = el('div', 'suggestion-text');
+  const title = el('div');
+  const txt = fixedTitle || (c ? routeName(c) : name);
+  const q = state.query.trim();
   const i = q ? txt.toLowerCase().indexOf(q.toLowerCase()) : -1;
   if (i >= 0) {
-    titulo.append(txt.slice(0, i), el('b', '', txt.slice(i, i + q.length)), txt.slice(i + q.length));
-  } else titulo.textContent = txt;
-  t.append(titulo);
+    title.append(txt.slice(0, i), el('b', '', txt.slice(i, i + q.length)), txt.slice(i + q.length));
+  } else title.textContent = txt;
+  t.append(title);
   // A caption is plain text, or a line status that may carry a warning.
-  if (legenda) t.append(el('small', legenda.aviso ? 'aviso' : '', legenda.txt ?? legenda));
+  if (caption) t.append(el('small', caption.warning ? 'warning' : '', caption.txt ?? caption));
   row.append(e, badge, t);
-  row.onclick = async () => { fechaBusca(); await segue(nome, true); enquadraLinha(nome); desenha(); };
+  row.onclick = async () => { closeSearch(); await follow(name, true); fitLine(name); render(); };
   return row;
 }
 
-async function carregaFreq() {
-  if (est.freq) return est.freq;
-  est.freq = await pega(`${EST}/freq.json`).catch(() => ({}));
-  return est.freq;
+async function loadFreq() {
+  if (state.freq) return state.freq;
+  state.freq = await getJson(`${STATIC}/freq.json`).catch(() => ({}));
+  return state.freq;
 }
 
 /* Scheduled headway of a line for this hour, in minutes, or null when it does
    not run now. */
-function freqAgora(l) {
-  return freqNaHora(est.freq && est.freq[l]);
+function headwayNow(l) {
+  return headwayFor(state.freq && state.freq[l]);
 }
 
-const onibusTxt = n => n === 1 ? '1 ônibus' : `${n} ônibus`;
+const busesText = n => n === 1 ? '1 ônibus' : `${n} ônibus`;
 
 /* Where a line stands right now, in one short sentence, or null while the
    live counts have not arrived. Picking a line must never leave the screen
    silent: no bus reporting, not running at this hour, and no published route
    all say so. */
-function estadoLinha(l) {
-  const c = est.catalogo.find(x => x[0] === l);
-  const viva = est.vivas.get(l);
-  const n = viva ? viva[0] : 0;
+function lineStatus(l) {
+  const c = state.catalog.find(x => x[0] === l);
+  const live = state.liveLines.get(l);
+  const n = live ? live[0] : 0;
   if (!c) {
-    if (n) return { txt: `Rota não publicada pela SMTR · ${onibusTxt(n)} agora` };
-    return est.vivasEm ? { txt: 'Nenhum ônibus desta linha nos dados da SMTR agora', aviso: true } : null;
+    if (n) return { txt: `Rota não publicada pela SMTR · ${busesText(n)} agora` };
+    return state.liveLinesAt ? { txt: 'Nenhum ônibus desta linha nos dados da SMTR agora', warning: true } : null;
   }
-  const h = freqAgora(l);
-  const cada = h ? ` · a cada ~${h} min` : '';
-  if (n) return { txt: `${onibusTxt(n)} agora${cada}` };
-  if (!est.vivasEm) return h ? { txt: `A cada ~${h} min` } : null;
-  const f = est.freq && est.freq[l];
+  const h = headwayNow(l);
+  const every = h ? ` · a cada ~${h} min` : '';
+  if (n) return { txt: `${busesText(n)} agora${every}` };
+  if (!state.liveLinesAt) return h ? { txt: `A cada ~${h} min` } : null;
+  const f = state.freq && state.freq[l];
   if (f && h == null) {
-    const { svc, hora } = tipoDia();
-    const hoje = f.filter(x => x[0] === svc);
-    const prox = hoje.map(x => x[1]).filter(x => x > hora).sort((a, b) => a - b)[0];
-    if (prox != null) return { txt: `Não opera neste horário · volta às ${prox} h`, aviso: true };
-    return { txt: hoje.length ? 'Não opera mais hoje' : 'Não opera hoje', aviso: true };
+    const { svc, hour } = dayType();
+    const today = f.filter(x => x[0] === svc);
+    const nextHour = today.map(x => x[1]).filter(x => x > hour).sort((a, b) => a - b)[0];
+    if (nextHour != null) return { txt: `Não opera neste horário · volta às ${nextHour} h`, warning: true };
+    return { txt: today.length ? 'Não opera mais hoje' : 'Não opera hoje', warning: true };
   }
-  return { txt: `Nenhum ônibus com sinal agora${cada}`, aviso: true };
+  return { txt: `Nenhum ônibus com sinal agora${every}`, warning: true };
 }
 
 /* Codes that differ from q by at most two edits, closest first, for a search
    that found nothing: "2335" typed as "2353", "SV744" for "SV774". */
-function parecidas(q) {
+function similarCodes(q) {
   const lev = (a, b) => {
     const d = Array.from({ length: b.length + 1 }, (_, i) => i);
     for (let i = 1; i <= a.length; i++) {
@@ -769,11 +769,11 @@ function parecidas(q) {
     }
     return d[b.length];
   };
-  const alvo = q.toUpperCase();
-  const codigos = new Set(est.catalogo.map(c => c[0]));
-  for (const [l, [, rota]] of est.vivas) if (!rota) codigos.add(l);
-  return [...codigos]
-    .map(l => ({ l, d: lev(alvo, l.toUpperCase()) }))
+  const tapTarget = q.toUpperCase();
+  const codes = new Set(state.catalog.map(c => c[0]));
+  for (const [l, [, route]] of state.liveLines) if (!route) codes.add(l);
+  return [...codes]
+    .map(l => ({ l, d: lev(tapTarget, l.toUpperCase()) }))
     .filter(x => x.d <= 2)
     .sort((a, b) => a.d - b.d || a.l.length - b.l.length)
     .slice(0, 3)
@@ -784,206 +784,206 @@ function parecidas(q) {
    walk to the stop (4.5 km/h) plus the average wait, half the headway. A line
    every 3 min at 400 m beats one every 20 min at your door, and a frequent
    line two kilometres away does not appear at all. */
-function linhasPerto() {
+function nearbyLines() {
   const m = new Map();
-  for (const s of est.paradas.values()) {
-    if (!s.linhas) continue;
-    const d = distM(est.eu, [s.lat, s.lon]);
-    if (d > RAIO_PERTO) continue;
-    for (const l of s.linhas) if (!m.has(l) || d < m.get(l)) m.set(l, d);
+  for (const s of state.stops.values()) {
+    if (!s.lines) continue;
+    const d = distM(state.here, [s.lat, s.lon]);
+    if (d > NEARBY_RADIUS) continue;
+    for (const l of s.lines) if (!m.has(l) || d < m.get(l)) m.set(l, d);
   }
   return [...m].map(([l, d]) => {
-    const h = freqAgora(l);
-    return { l, d, h, custo: d / 75 + (h == null ? 1e3 : h / 2) };
-  }).sort((a, b) => a.custo - b.custo);
+    const h = headwayNow(l);
+    return { l, d, h, cost: d / 75 + (h == null ? 1e3 : h / 2) };
+  }).sort((a, b) => a.cost - b.cost);
 }
 
-function desenhaSugestoes() {
-  const box = $('#sugestoes');
-  if (!est.buscando) return;
+function renderSuggestions() {
+  const box = $('#suggestions');
+  if (!state.searching) return;
   box.textContent = '';
-  const q = est.busca.trim().toLowerCase();
+  const q = state.query.trim().toLowerCase();
   if (q) {
-    const hits = est.catalogo.filter(c =>
+    const hits = state.catalog.filter(c =>
       c[0].toLowerCase().startsWith(q) || c[1].toLowerCase().includes(q) ||
       c[3].some(d => d.toLowerCase().includes(q)) ||
       (c[4] || []).some(a => a.toLowerCase().startsWith(q))).slice(0, 30);
     // Lines on the road whose route the SMTR has not published yet.
-    const semRota = [...est.vivas].filter(([l, [, rota]]) => !rota && l.toLowerCase().startsWith(q));
-    for (const c of hits) box.append(sug(c[0], estadoLinha(c[0])));
-    for (const [l, [n]] of semRota) box.append(sug(l, `${onibusTxt(n)} agora`, 'Rota não publicada pela SMTR'));
-    if (!hits.length && !semRota.length) {
-      box.append(el('div', 'sug-vazio', `Nenhuma linha com "${est.busca}".`));
-      const p = parecidas(est.busca.trim());
+    const noRoute = [...state.liveLines].filter(([l, [, route]]) => !route && l.toLowerCase().startsWith(q));
+    for (const c of hits) box.append(suggestionRow(c[0], lineStatus(c[0])));
+    for (const [l, [n]] of noRoute) box.append(suggestionRow(l, `${busesText(n)} agora`, 'Rota não publicada pela SMTR'));
+    if (!hits.length && !noRoute.length) {
+      box.append(el('div', 'suggestion-empty', `Nenhuma linha com "${state.query}".`));
+      const p = similarCodes(state.query.trim());
       if (p.length) {
-        box.append(el('div', 'sug-grupo', 'Talvez você procure'));
-        for (const l of p) box.append(sug(l, estadoLinha(l)));
+        box.append(el('div', 'suggestion-group', 'Talvez você procure'));
+        for (const l of p) box.append(suggestionRow(l, lineStatus(l)));
       }
-      box.append(el('p', 'sug-nota', 'O busones mostra as linhas municipais do Rio e o BRT. Linhas intermunicipais e de outros municípios não fazem parte dos dados da SMTR.'));
+      box.append(el('p', 'suggestion-note', 'O busones mostra as linhas municipais do Rio e o BRT. Linhas intermunicipais e de outros municípios não fazem parte dos dados da SMTR.'));
     }
     return;
   }
-  if (est.minhas.length) {
-    box.append(el('div', 'sug-grupo', 'Suas linhas'));
-    for (const l of est.minhas) box.append(sug(l, estadoLinha(l)));
+  if (state.myLines.length) {
+    box.append(el('div', 'suggestion-group', 'Suas linhas'));
+    for (const l of state.myLines) box.append(suggestionRow(l, lineStatus(l)));
   }
-  const perto = linhasPerto().filter(x => !est.minhas.includes(x.l));
-  box.append(el('div', 'sug-grupo', perto.length ? 'Perto de você' : 'Nenhuma linha perto de você'));
-  for (const x of perto.slice(0, 25)) {
-    const quando = x.h == null ? 'sem ônibus nesta hora' : `a cada ~${x.h} min`;
-    box.append(sug(x.l, `${quando} · ${aPe(x.d)}`));
+  const nearby = nearbyLines().filter(x => !state.myLines.includes(x.l));
+  box.append(el('div', 'suggestion-group', nearby.length ? 'Perto de você' : 'Nenhuma linha perto de você'));
+  for (const x of nearby.slice(0, 25)) {
+    const when = x.h == null ? 'sem ônibus nesta hora' : `a cada ~${x.h} min`;
+    box.append(suggestionRow(x.l, `${when} · ${walkTime(x.d)}`));
   }
 }
 
 /* ---------- following ---------- */
-async function segue(l, sim, headsign) {
-  if (sim && !est.minhas.includes(l)) {
-    if (est.minhas.length >= 8) est.minhas.shift();
-    est.minhas.push(l);
-    if (headsign) est.sentido[l] = headsign;
-    salva();
+async function follow(l, yes, headsign) {
+  if (yes && !state.myLines.includes(l)) {
+    if (state.myLines.length >= 8) state.myLines.shift();
+    state.myLines.push(l);
+    if (headsign) state.chosenDir[l] = headsign;
+    saveState();
     await bundle(l);
-    desenha();
-    await atualiza();
-  } else if (!sim) {
-    est.minhas = est.minhas.filter(x => x !== l);
-    est.frotas.delete(l);
-    est.focadas.delete(l);
-    salva();
-    desenha();
+    render();
+    await refresh();
+  } else if (!yes) {
+    state.myLines = state.myLines.filter(x => x !== l);
+    state.fleets.delete(l);
+    state.focused.delete(l);
+    saveState();
+    render();
   } else if (headsign) {
-    est.sentido[l] = headsign;
-    salva();
-    desenha();
+    state.chosenDir[l] = headsign;
+    saveState();
+    render();
   }
 }
 
 /* Removes every line at once. */
-function removeTodas() {
-  fechaMenu();
-  if (!est.minhas.length) return;
-  est.minhas = [];
-  est.focadas.clear();
-  est.frotas.clear();
-  est.balao = null;
-  salva();
-  desenha();
+function removeAll() {
+  closeMenu();
+  if (!state.myLines.length) return;
+  state.myLines = [];
+  state.focused.clear();
+  state.fleets.clear();
+  state.callout = null;
+  saveState();
+  render();
 }
 
 /* Adds a line to the focus, or takes it out. Focusing frames the line. */
-function focaLinha(l) {
-  if (est.focadas.has(l)) est.focadas.delete(l);
-  else { est.focadas.add(l); enquadraLinha(l); }
-  desenha();
+function toggleFocus(l) {
+  if (state.focused.has(l)) state.focused.delete(l);
+  else { state.focused.add(l); fitLine(l); }
+  render();
 }
 
 /* Frame you, the stop you would use, and the buses on their way to it. */
-function enquadraLinha(l) {
-  const d = dirAtual(l);
+function fitLine(l) {
+  const d = currentDir(l);
   if (!d) {
     // A line without a route: you and its nearest buses.
-    const perto = (est.frotas.get(l) || []).map(v => [v.lat, v.lon])
-      .sort((a, b) => distM(est.eu, a) - distM(est.eu, b)).slice(0, 3);
-    if (perto.length) enquadraPontos([est.eu, ...perto]);
+    const nearby = (state.fleets.get(l) || []).map(v => [v.lat, v.lon])
+      .sort((a, b) => distM(state.here, a) - distM(state.here, b)).slice(0, 3);
+    if (nearby.length) fitPoints([state.here, ...nearby]);
     return;
   }
-  const p = paradaPerto(d);
-  const pts = [est.eu];
+  const p = nearestStop(d);
+  const pts = [state.here];
   if (p) pts.push([p.lat, p.lon]);
-  if (p) for (const a of chegadasEm(p.id, l, d.headsign).slice(0, 2)) {
-    const v = (est.frotas.get(l) || []).find(x => x.id === a[7]);
+  if (p) for (const a of arrivalsAt(p.id, l, d.headsign).slice(0, 2)) {
+    const v = (state.fleets.get(l) || []).find(x => x.id === a[7]);
     if (v) pts.push([v.lat, v.lon]);
   }
-  enquadraPontos(pts);
+  fitPoints(pts);
 }
 
 /* ---------- bus callout ---------- */
-function desenhaBalao() {
-  const b = $('#balao');
-  if (!est.balao) { b.hidden = true; return; }
-  const v = est.balao;
-  const pos = naTela(v.lat, v.lon);
+function renderCallout() {
+  const b = $('#callout');
+  if (!state.callout) { b.hidden = true; return; }
+  const v = state.callout;
+  const pos = toScreen(v.lat, v.lon);
   b.hidden = false;
   b.textContent = '';
-  const corpo = el('div', 'balao-corpo');
-  const lb = el('div', 'balao-linha');
-  lb.style.setProperty('--cor', corDaLinha(v.line));
-  lb.style.setProperty('--cor-texto', textoDaLinha(v.line));
+  const bodyEl = el('div', 'callout-body');
+  const lb = el('div', 'callout-line');
+  lb.style.setProperty('--color', lineColor(v.line));
+  lb.style.setProperty('--color-text', lineTextColor(v.line));
   lb.append(el('b', '', v.line), el('small', '', v.id));
-  const info = el('div', 'balao-info');
-  const s1 = el('div', 'sinal');
-  s1.append(icone('sinal'), document.createTextNode(atras(agoraS() - v.t)));
+  const info = el('div', 'callout-info');
+  const s1 = el('div', 'signal');
+  s1.append(icon('signal'), document.createTextNode(ago(nowS() - v.t)));
   info.append(s1, el('div', '', `${Math.round(v.spd || 0)} km/h`));
-  corpo.append(lb, info);
-  b.append(corpo);
-  const rod = el('div', 'balao-rodape');
-  const semRota = est.bundles.has(v.line) && !est.bundles.get(v.line);
-  rod.append(document.createTextNode(v.dir ? `Sentido ${v.to || v.dir}`
-    : semRota ? 'Rota não publicada pela SMTR' : 'Sentido ainda não confirmado'));
-  const a = est.chegadas.find(x => x[7] === v.id && (!est.folha || x[0] === est.folha.id));
+  bodyEl.append(lb, info);
+  b.append(bodyEl);
+  const footer = el('div', 'callout-footer');
+  const noRoute = state.bundles.has(v.line) && !state.bundles.get(v.line);
+  footer.append(document.createTextNode(v.dir ? `Sentido ${v.to || v.dir}`
+    : noRoute ? 'Rota não publicada pela SMTR' : 'Sentido ainda não confirmado'));
+  const a = state.arrivals.find(x => x[7] === v.id && (!state.sheet || x[0] === state.sheet.id));
   if (a) {
-    const f = faixa(a);
-    rod.append(document.createTextNode(' · '), el('b', '', f.chegando ? 'chegando' : `chega ${textoFaixa(f)}`));
+    const f = etaRange(a);
+    footer.append(document.createTextNode(' · '), el('b', '', f.arriving ? 'chegando' : `chega ${rangeText(f)}`));
   }
-  b.append(rod);
+  b.append(footer);
 
   // Keep the whole callout on screen: shift it sideways near an edge and open
   // it below the bus near the top, with the arrow still on the bus.
   const w = b.offsetWidth, h = b.offsetHeight;
   const left = Math.max(8, Math.min(innerWidth - w - 8, pos[0] - w / 2));
-  const abaixo = pos[1] - h - 22 < 76;
+  const below = pos[1] - h - 22 < 76;
   b.style.left = left + 'px';
-  b.style.top = (abaixo ? pos[1] + 22 : pos[1] - h - 22) + 'px';
-  b.style.setProperty('--seta-x', `${Math.max(14, Math.min(w - 14, pos[0] - left))}px`);
-  b.classList.toggle('abaixo', abaixo);
+  b.style.top = (below ? pos[1] + 22 : pos[1] - h - 22) + 'px';
+  b.style.setProperty('--arrow-x', `${Math.max(14, Math.min(w - 14, pos[0] - left))}px`);
+  b.classList.toggle('below', below);
 }
 
 
 /* Called by the map when a bus or a stop is tapped. */
-function aoTocarMapa(alvo) {
-  fechaMenu();
-  if (est.buscando) { fechaBusca(); return; }
-  if (!alvo) { if (est.balao) { est.balao = null; desenhaBalao(); } return; }
-  if (alvo.tipo === 'onibus') {
-    const a = est.chegadas.find(x => x[7] === alvo.v.id);
-    est.balao = { ...alvo.v, cor: alvo.cor, to: a ? a[2] : null };
-    desenhaBalao();
-  } else if (alvo.tipo === 'parada') {
-    abreFolha(alvo.p);
+function onMapTap(tapTarget) {
+  closeMenu();
+  if (state.searching) { closeSearch(); return; }
+  if (!tapTarget) { if (state.callout) { state.callout = null; renderCallout(); } return; }
+  if (tapTarget.kind === 'bus') {
+    const a = state.arrivals.find(x => x[7] === tapTarget.v.id);
+    state.callout = { ...tapTarget.v, color: tapTarget.color, to: a ? a[2] : null };
+    renderCallout();
+  } else if (tapTarget.kind === 'stop') {
+    openSheet(tapTarget.p);
   }
 }
 
 /* ---------- settings ---------- */
-function abreAjustes() {
-  const box = $('#ajustes-lista');
+function openSettings() {
+  const box = $('#settings-list');
   box.textContent = '';
-  const itens = [
-    ['escuro', 'Modo escuro', ''],
-    ['rota', 'Exibir rota', 'O traçado das linhas que você acompanha'],
-    ['paradas', 'Exibir paradas', 'Pontos de ônibus no mapa'],
-    ['semSinal', 'Exibir ônibus sem sinal', 'Ônibus que não enviam posição há mais de 3 minutos'],
+  const items = [
+    ['dark', 'Modo escuro', ''],
+    ['route', 'Exibir rota', 'O traçado das linhas que você acompanha'],
+    ['stops', 'Exibir paradas', 'Pontos de ônibus no mapa'],
+    ['staleBuses', 'Exibir ônibus sem sinal', 'Ônibus que não enviam posição há mais de 3 minutos'],
   ];
-  for (const [k, titulo, sub] of itens) {
-    const b = el('button', 'ajuste');
+  for (const [k, title, sub] of items) {
+    const b = el('button', 'setting');
     b.setAttribute('role', 'switch');
-    b.setAttribute('aria-checked', !!est.ajustes[k]);
-    const t = el('div', 'ajuste-txt', titulo);
+    b.setAttribute('aria-checked', !!state.settings[k]);
+    const t = el('div', 'setting-text', title);
     if (sub) t.append(el('small', '', sub));
-    b.append(t, el('span', 'chave'));
+    b.append(t, el('span', 'toggle'));
     b.onclick = () => {
-      est.ajustes[k] = !est.ajustes[k];
-      salva();
-      aplicaTema();
-      abreAjustes();
-      desenha();
+      state.settings[k] = !state.settings[k];
+      saveState();
+      applyTheme();
+      openSettings();
+      render();
     };
     box.append(b);
   }
-  $('#ajustes').hidden = false;
+  $('#settings').hidden = false;
 }
-function aplicaTema() {
-  document.documentElement.dataset.tema = est.ajustes.escuro ? 'escuro' : 'claro';
-  document.querySelector('meta[name=theme-color]').content = est.ajustes.escuro ? '#202124' : '#ffffff';
+function applyTheme() {
+  document.documentElement.dataset.theme = state.settings.dark ? 'dark' : 'light';
+  document.querySelector('meta[name=theme-color]').content = state.settings.dark ? '#202124' : '#ffffff';
 }
 
 /* ---------- map scene ---------- */
@@ -993,104 +993,104 @@ function aplicaTema() {
  * it. Everything else waits for a reason to appear: focusing a line shows all
  * of its buses and its stops, opening a stop shows the buses coming to it,
  * and zooming in shows the stops around you. */
-const MAX_POR_LINHA = 3;
+const MAX_PER_LINE = 3;
 
-function onibusIndoParaMim(l) {
-  const d = dirAtual(l);
-  const p = d && paradaPerto(d);
+function busesComingToMe(l) {
+  const d = currentDir(l);
+  const p = d && nearestStop(d);
   if (!p) return [];
-  const frota = est.frotas.get(l) || [];
-  return chegadasEm(p.id, l, d.headsign)
-    .slice(0, MAX_POR_LINHA)
-    .map(a => frota.find(v => v.id === a[7]))
+  const fleet = state.fleets.get(l) || [];
+  return arrivalsAt(p.id, l, d.headsign)
+    .slice(0, MAX_PER_LINE)
+    .map(a => fleet.find(v => v.id === a[7]))
     .filter(Boolean);
 }
 
-function cena() {
-  const c = { rotas: [], suas: [], pontinhos: [], outras: [], onibus: [], destaque: null };
-  const velhoOk = est.ajustes.semSinal;
-  const foco = est.focadas;
-  const vistos = new Set();
-  const addOnibus = (v, cor) => {
-    if (vistos.has(v.id) || v.ph === 'parked') return;
-    const velho = agoraS() - v.t > 180;
-    if (velho && !velhoOk) return;
-    vistos.add(v.id);
-    c.onibus.push({ v, cor, velho, rotulo: null });
+function scene() {
+  const c = { routes: [], yours: [], dots: [], others: [], buses: [], highlight: null };
+  const staleOk = state.settings.staleBuses;
+  const focusSet = state.focused;
+  const seen = new Set();
+  const addBus = (v, color) => {
+    if (seen.has(v.id) || v.ph === 'parked') return;
+    const stale = nowS() - v.t > 180;
+    if (stale && !staleOk) return;
+    seen.add(v.id);
+    c.buses.push({ v, color, stale, numberTag: null });
   };
 
-  for (const l of est.minhas) {
-    if (foco.size && !foco.has(l)) continue;
-    const b = est.bundles.get(l);
-    const d = dirAtual(l);
-    const cor = corNoMapa(l);
+  for (const l of state.myLines) {
+    if (focusSet.size && !focusSet.has(l)) continue;
+    const b = state.bundles.get(l);
+    const d = currentDir(l);
+    const color = mapColor(l);
     if (!b) {
       // No published route: no direction to pick and no stop to wait at, so
       // every bus of the line is shown.
-      for (const v of est.frotas.get(l) || []) addOnibus(v, cor);
+      for (const v of state.fleets.get(l) || []) addBus(v, color);
       continue;
     }
     if (!d) continue;
-    if (est.ajustes.rota) c.rotas.push({ cor, pts: d.pts, forte: foco.has(l) });
-    const p = paradaPerto(d);
-    if (p && !est.folha) {
+    if (state.settings.route) c.routes.push({ color, pts: d.pts, strong: focusSet.has(l) });
+    const p = nearestStop(d);
+    if (p && !state.sheet) {
       // Several lines can share the stop you would use: one sign, one label.
-      const ja = c.suas.find(s => s.id === p.id);
-      if (ja) ja.linhas.push(l);
-      else c.suas.push({ ...p, cor, linhas: [l] });
+      const existing = c.yours.find(s => s.id === p.id);
+      if (existing) existing.lines.push(l);
+      else c.yours.push({ ...p, color, lines: [l] });
     }
     // The stops of your lines only, never every stop in the area: with lines
     // in focus, only theirs. Small dots in the line's colour, from zoom 15.
-    if (est.ajustes.paradas && mapa.z >= 15 && !est.folha) {
+    if (state.settings.stops && view.z >= 15 && !state.sheet) {
       for (const s of d.stops) {
         if (p && s[0] === p.id) continue;
-        c.pontinhos.push({ lat: s[1], lon: s[2], cor, id: s[0], nome: s[3], sub: s[5] || '' });
+        c.dots.push({ lat: s[1], lon: s[2], color, id: s[0], name: s[3], sub: s[5] || '' });
       }
     }
-    if (foco.has(l)) {
+    if (focusSet.has(l)) {
       // In focus: every bus riding this direction, not just the next few.
-      for (const v of est.frotas.get(l) || []) if (v.shp === d.shape) addOnibus(v, cor);
-    } else if (!est.folha) {
-      for (const v of onibusIndoParaMim(l)) addOnibus(v, cor);
+      for (const v of state.fleets.get(l) || []) if (v.shp === d.shape) addBus(v, color);
+    } else if (!state.sheet) {
+      for (const v of busesComingToMe(l)) addBus(v, color);
     }
   }
 
-  if (est.folha) {
+  if (state.sheet) {
     // A stop is open: it, and the buses on their way to it.
-    c.destaque = est.folha;
-    const frotas = [...est.frotas.values()].flat();
-    for (const a of chegadasEm(est.folha.id).slice(0, 8)) {
-      const v = frotas.find(x => x.id === a[7]) || est.veiculosFolha.find(x => x.id === a[7]);
-      if (v) addOnibus({ ...v, line: a[1] }, corNoMapa(a[1]));
+    c.highlight = state.sheet;
+    const fleets = [...state.fleets.values()].flat();
+    for (const a of arrivalsAt(state.sheet.id).slice(0, 8)) {
+      const v = fleets.find(x => x.id === a[7]) || state.sheetVehicles.find(x => x.id === a[7]);
+      if (v) addBus({ ...v, line: a[1] }, mapColor(a[1]));
     }
   }
   // Lines of one region share its colour. When two lines on the map do, their
   // buses carry the number, the way apps in cities where every bus is red
   // tell them apart.
-  const linhasPorCor = new Map();
-  for (const o of c.onibus) {
-    if (!linhasPorCor.has(o.cor)) linhasPorCor.set(o.cor, new Set());
-    linhasPorCor.get(o.cor).add(o.v.line);
+  const linesByColor = new Map();
+  for (const o of c.buses) {
+    if (!linesByColor.has(o.color)) linesByColor.set(o.color, new Set());
+    linesByColor.get(o.color).add(o.v.line);
   }
-  for (const o of c.onibus) {
-    if (linhasPorCor.get(o.cor).size > 1) {
-      o.rotulo = { txt: o.v.line, fundo: corDaLinha(o.v.line), texto: textoDaLinha(o.v.line) };
+  for (const o of c.buses) {
+    if (linesByColor.get(o.color).size > 1) {
+      o.numberTag = { txt: o.v.line, bg: lineColor(o.v.line), text: lineTextColor(o.v.line) };
     }
   }
   return c;
 }
 
 /* ---------- render ---------- */
-function desenha() {
+function render() {
   try {
-    desenhaTrilho();
-    if (est.folha) desenhaFolha();
-    if (est.buscando) desenhaSugestoes();
+    renderRail();
+    if (state.sheet) renderSheet();
+    if (state.searching) renderSuggestions();
   } catch (e) {
     console.error(e);
   }
-  desenhaMapa();
-  desenhaBalao();
+  drawMap();
+  renderCallout();
 }
 
 /* ---------- where you are ----------
@@ -1100,283 +1100,283 @@ function desenha() {
  * neighbourhoods, 7,694 stops), so there is no geocoding service to call. */
 const norm = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
-function salvaLocal() {
+function savePlace() {
   try {
-    localStorage.setItem('busones:local', JSON.stringify(
-      est.local.modo === 'manual' ? { modo: 'manual', lat: est.eu[0], lon: est.eu[1], nome: est.local.nome } : { modo: est.local.modo }));
+    localStorage.setItem('busones:place', JSON.stringify(
+      state.place.mode === 'manual' ? { mode: 'manual', lat: state.here[0], lon: state.here[1], name: state.place.name } : { mode: state.place.mode }));
   } catch {}
 }
-function localSalvo() {
-  try { return JSON.parse(localStorage.getItem('busones:local') || 'null'); } catch { return null; }
+function savedPlace() {
+  try { return JSON.parse(localStorage.getItem('busones:place') || 'null'); } catch { return null; }
 }
 
-function atualizaOnde() {
-  const t = $('#onde-txt');
+function updateWhere() {
+  const t = $('#where-text');
   if (!t) return;
-  t.textContent = est.local.modo === 'manual' ? est.local.nome
-    : est.local.modo === 'gps' ? 'Minha localização' : 'Onde você está?';
+  t.textContent = state.place.mode === 'manual' ? state.place.name
+    : state.place.mode === 'gps' ? 'Minha localização' : 'Onde você está?';
 }
 
-async function definirLocal(lat, lon, nome, modo, opts = {}) {
-  est.eu = [lat, lon];
-  est.temLocal = true;
-  est.local = { modo, nome };
-  salvaLocal();
-  atualizaOnde();
-  if (opts.centraliza !== false) {
-    mapa.centro = [lat, lon];
-    mapa.z = Math.max(mapa.z, 15);
+async function setPlace(lat, lon, name, mode, opts = {}) {
+  state.here = [lat, lon];
+  state.hasPlace = true;
+  state.place = { mode, name };
+  savePlace();
+  updateWhere();
+  if (opts.recenter !== false) {
+    view.center = [lat, lon];
+    view.z = Math.max(view.z, 15);
   }
-  desenha();
-  if (opts.endereco) nomeEndereco(lat, lon);
-  await paradasEm(lat, lon);
-  desenha();
-  await atualiza();
+  render();
+  if (opts.address) addressName(lat, lon);
+  await loadStopsAround(lat, lon);
+  render();
+  await refresh();
 }
 
 /* The street and number of a point, as onibus-rj showed it; the local name
    (nearest stop or neighbourhood) stays until the answer arrives. */
-let reversoSeq = 0;
-async function nomeEndereco(lat, lon) {
-  const seq = ++reversoSeq;
+let reverseSeq = 0;
+async function addressName(lat, lon) {
+  const seq = ++reverseSeq;
   try {
     const r = await fetch(`${GEO}/reverse?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`);
     if (!r.ok) return;
     const l = await r.json();
-    if (!l || !l.nome || seq !== reversoSeq || est.local.modo !== 'manual') return;
-    if (Math.abs(est.eu[0] - lat) > 1e-6 || Math.abs(est.eu[1] - lon) > 1e-6) return;
-    est.local.nome = l.nome;
-    salvaLocal();
-    atualizaOnde();
+    if (!l || !l.name || seq !== reverseSeq || state.place.mode !== 'manual') return;
+    if (Math.abs(state.here[0] - lat) > 1e-6 || Math.abs(state.here[1] - lon) > 1e-6) return;
+    state.place.name = l.name;
+    savePlace();
+    updateWhere();
   } catch {}
 }
 
 /* Called by the map: the pin was dragged, or a point was held down. */
-async function aoMoverPino(lat, lon) {
-  await paradasEm(lat, lon);
-  definirLocal(lat, lon, nomePerto(lat, lon), 'manual', { centraliza: false, endereco: true });
+async function onPinMoved(lat, lon) {
+  await loadStopsAround(lat, lon);
+  setPlace(lat, lon, nearbyName(lat, lon), 'manual', { recenter: false, address: true });
 }
 
-function usarGps(silencioso) {
-  if (!navigator.geolocation) { if (!silencioso) avisoLocal('Este navegador não informa a localização.'); return; }
+function useGps(quiet) {
+  if (!navigator.geolocation) { if (!quiet) placeNotice('Este navegador não informa a localização.'); return; }
   navigator.geolocation.getCurrentPosition(
-    p => { fechaLocal(); definirLocal(p.coords.latitude, p.coords.longitude, 'Minha localização', 'gps'); },
+    p => { closePlacePanel(); setPlace(p.coords.latitude, p.coords.longitude, 'Minha localização', 'gps'); },
     () => {
-      if (silencioso && !est.temLocal) abreLocal('Não conseguimos sua localização. Escolha onde você está.');
-      else if (!silencioso) avisoLocal('Não foi possível usar o GPS. Escolha no mapa ou busque um bairro ou parada.');
+      if (quiet && !state.hasPlace) openPlacePanel('Não conseguimos sua localização. Escolha onde você está.');
+      else if (!quiet) placeNotice('Não foi possível usar o GPS. Escolha no mapa ou busque um bairro ou parada.');
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
 }
 
-function nomePerto(lat, lon) {
-  let parada = null, dp = Infinity;
-  for (const s of est.paradas.values()) {
+function nearbyName(lat, lon) {
+  let stop = null, dp = Infinity;
+  for (const s of state.stops.values()) {
     const d = distM([lat, lon], [s.lat, s.lon]);
-    if (d < dp) { dp = d; parada = s; }
+    if (d < dp) { dp = d; stop = s; }
   }
-  if (parada && dp <= 250) return parada.nome;
-  let bairro = null, db = Infinity;
-  for (const p of lugares || []) {
+  if (stop && dp <= 250) return stop.name;
+  let neighborhood = null, db = Infinity;
+  for (const p of placeNames || []) {
     const d = distM([lat, lon], [p[1], p[0]]);
-    if (d < db) { db = d; bairro = p[2]; }
+    if (d < db) { db = d; neighborhood = p[2]; }
   }
-  return bairro && db < 3000 ? bairro : 'Local escolhido';
+  return neighborhood && db < 3000 ? neighborhood : 'Local escolhido';
 }
 
-async function carregaTodasParadas() {
-  if (est.todasParadas) return est.todasParadas;
-  est.todasParadas = await pega(`${EST}/stops.json`).catch(() => []);
-  for (const s of est.todasParadas) s.n = norm(s[3]);
-  return est.todasParadas;
+async function loadAllStops() {
+  if (state.allStops) return state.allStops;
+  state.allStops = await getJson(`${STATIC}/stops.json`).catch(() => []);
+  for (const s of state.allStops) s.n = norm(s[3]);
+  return state.allStops;
 }
 
-function linhaLugar(icone_, cls, titulo, sub, acao, atual) {
-  const b = el('button', 'lugar' + (atual ? ' atual' : ''));
-  const ic = el('span', 'lugar-icone ' + cls);
-  ic.append(icone(icone_));
-  const t = el('span', 'lugar-txt');
-  t.append(el('b', '', titulo));
+function placeRow(iconName, cls, title, sub, action, current) {
+  const b = el('button', 'place-row' + (current ? ' current' : ''));
+  const ic = el('span', 'place-row-icon ' + cls);
+  ic.append(icon(iconName));
+  const t = el('span', 'place-row-text');
+  t.append(el('b', '', title));
   if (sub) t.append(el('small', '', sub));
   b.append(ic, t);
-  b.onclick = acao;
+  b.onclick = action;
   return b;
 }
 
-let buscaLocalSeq = 0;
-async function desenhaLocal(aviso) {
-  const lista = $('#local-lista');
-  const q = norm($('#local-campo').value.trim());
-  const seq = ++buscaLocalSeq;
-  lista.textContent = '';
-  if (aviso) lista.append(el('p', 'local-aviso', aviso));
+let placeSearchSeq = 0;
+async function renderPlacePanel(warning) {
+  const list = $('#place-list');
+  const q = norm($('#place-field').value.trim());
+  const seq = ++placeSearchSeq;
+  list.textContent = '';
+  if (warning) list.append(el('p', 'place-notice', warning));
   if (!q) {
-    lista.append(
-      linhaLugar('mira', 'gps', 'Usar minha localização', 'Pelo GPS do aparelho', () => usarGps(false), est.local.modo === 'gps'),
-      linhaLugar('pino', 'mapa', 'Escolher no mapa', 'Ou arraste o alfinete, ou segure o dedo num ponto do mapa', iniciaEscolha, false));
-    if (est.local.modo === 'manual') {
-      lista.append(linhaLugar('pino', '', est.local.nome, 'Local escolhido por você',
-        () => { fechaLocal(); mapa.centro = [...est.eu]; desenha(); }, true));
+    list.append(
+      placeRow('crosshair', 'gps', 'Usar minha localização', 'Pelo GPS do aparelho', () => useGps(false), state.place.mode === 'gps'),
+      placeRow('pin', 'map', 'Escolher no mapa', 'Ou arraste o alfinete, ou segure o dedo num ponto do mapa', startPick, false));
+    if (state.place.mode === 'manual') {
+      list.append(placeRow('pin', '', state.place.name, 'Local escolhido por você',
+        () => { closePlacePanel(); view.center = [...state.here]; render(); }, true));
     }
     return;
   }
-  carregaLugares();
+  loadPlaceNames();
   // Full addresses come from the backend on request, never per keystroke:
   // Nominatim's usage policy forbids search-as-you-type.
   if (q.length >= 3) {
-    const bruto = $('#local-campo').value.trim();
-    lista.append(linhaLugar('busca', 'gps', `Buscar endereço "${bruto}"`, 'Rua e número, ou um lugar',
-      () => buscaEndereco(bruto), false));
+    const raw = $('#place-field').value.trim();
+    list.append(placeRow('search', 'gps', `Buscar endereço "${raw}"`, 'Rua e número, ou um lugar',
+      () => searchAddress(raw), false));
   }
   // One entry per name: two stops called "Metrô Glória" are the two sides of
   // the same street, and either is a fine answer to "where are you".
-  const unicos = (lista, nome) => {
-    const vistos = new Set();
-    return lista.filter(x => { const k = norm(nome(x)); if (vistos.has(k)) return false; vistos.add(k); return true; });
+  const unique = (list, name) => {
+    const seen = new Set();
+    return list.filter(x => { const k = norm(name(x)); if (seen.has(k)) return false; seen.add(k); return true; });
   };
-  const bairros = unicos((lugares || [])
+  const neighborhoods = unique((placeNames || [])
     .filter(p => norm(p[2]).includes(q))
     .sort((x, y) => (norm(x[2]).startsWith(q) ? 0 : 1) - (norm(y[2]).startsWith(q) ? 0 : 1) || x[3] - y[3]), p => p[2])
     .slice(0, 6);
-  for (const p of bairros) {
-    lista.append(linhaLugar('pino', '', p[2], p[3] === 2 ? 'Bairro' : 'Região',
-      () => { fechaLocal(); definirLocal(p[1], p[0], p[2], 'manual'); }, false));
+  for (const p of neighborhoods) {
+    list.append(placeRow('pin', '', p[2], p[3] === 2 ? 'Bairro' : 'Região',
+      () => { closePlacePanel(); setPlace(p[1], p[0], p[2], 'manual'); }, false));
   }
-  const paradas = await carregaTodasParadas();
-  if (seq !== buscaLocalSeq) return;
-  const achadas = unicos(paradas.filter(s => s.n.includes(q))
+  const stops = await loadAllStops();
+  if (seq !== placeSearchSeq) return;
+  const found = unique(stops.filter(s => s.n.includes(q))
     .sort((x, y) => (x.n.startsWith(q) ? 0 : 1) - (y.n.startsWith(q) ? 0 : 1)), s => s[3]).slice(0, 12);
-  for (const s of achadas) {
-    lista.append(linhaLugar('parada', 'parada', s[3], s[4] ? `Parada · ${s[4]}` : 'Parada',
-      () => { fechaLocal(); definirLocal(s[1], s[2], s[3], 'manual'); }, false));
+  for (const s of found) {
+    list.append(placeRow('stop', 'stop', s[3], s[4] ? `Parada · ${s[4]}` : 'Parada',
+      () => { closePlacePanel(); setPlace(s[1], s[2], s[3], 'manual'); }, false));
   }
-  if (!bairros.length && !achadas.length) lista.append(el('p', 'local-aviso', `Nada encontrado para "${$('#local-campo').value}".`));
+  if (!neighborhoods.length && !found.length) list.append(el('p', 'place-notice', `Nada encontrado para "${$('#place-field').value}".`));
 }
 
-async function buscaEndereco(texto) {
-  const lista = $('#local-lista');
-  const seq = ++buscaLocalSeq;
-  lista.textContent = '';
-  lista.append(el('p', 'local-aviso', 'Buscando endereço…'));
+async function searchAddress(text) {
+  const list = $('#place-list');
+  const seq = ++placeSearchSeq;
+  list.textContent = '';
+  list.append(el('p', 'place-notice', 'Buscando endereço…'));
   try {
-    const r = await fetch(`${GEO}/geocode?q=${encodeURIComponent(texto)}`);
-    if (seq !== buscaLocalSeq) return;
-    const lugaresAchados = r.ok ? await r.json() : null;
-    lista.textContent = '';
-    if (!lugaresAchados) {
-      lista.append(el('p', 'local-aviso', 'A busca de endereço não respondeu agora. Tente bairro ou parada, ou escolha no mapa.'));
+    const r = await fetch(`${GEO}/geocode?q=${encodeURIComponent(text)}`);
+    if (seq !== placeSearchSeq) return;
+    const foundPlaces = r.ok ? await r.json() : null;
+    list.textContent = '';
+    if (!foundPlaces) {
+      list.append(el('p', 'place-notice', 'A busca de endereço não respondeu agora. Tente bairro ou parada, ou escolha no mapa.'));
       return;
     }
-    if (!lugaresAchados.length) {
-      lista.append(el('p', 'local-aviso', `Nenhum endereço encontrado para "${texto}" no Rio.`));
+    if (!foundPlaces.length) {
+      list.append(el('p', 'place-notice', `Nenhum endereço encontrado para "${text}" no Rio.`));
       return;
     }
-    for (const l of lugaresAchados) {
-      lista.append(linhaLugar('pino', '', l.nome, l.area || 'Endereço',
-        () => { fechaLocal(); definirLocal(l.lat, l.lon, l.nome, 'manual'); }, false));
+    for (const l of foundPlaces) {
+      list.append(placeRow('pin', '', l.name, l.area || 'Endereço',
+        () => { closePlacePanel(); setPlace(l.lat, l.lon, l.name, 'manual'); }, false));
     }
   } catch {
-    if (seq === buscaLocalSeq) {
-      lista.textContent = '';
-      lista.append(el('p', 'local-aviso', 'Sem conexão com a busca de endereço.'));
+    if (seq === placeSearchSeq) {
+      list.textContent = '';
+      list.append(el('p', 'place-notice', 'Sem conexão com a busca de endereço.'));
     }
   }
 }
 
-function abreLocal(aviso) {
-  fechaBusca();
-  fechaMenu();
-  est.balao = null;
-  $('#local-campo').value = '';
-  $('#local').hidden = false;
-  document.body.classList.add('local-aberto');
-  carregaLugares();
-  desenhaLocal(aviso);
+function openPlacePanel(warning) {
+  closeSearch();
+  closeMenu();
+  state.callout = null;
+  $('#place-field').value = '';
+  $('#place-panel').hidden = false;
+  document.body.classList.add('place-open');
+  loadPlaceNames();
+  renderPlacePanel(warning);
 }
-function fechaLocal() { $('#local').hidden = true; document.body.classList.remove('local-aberto'); }
-function avisoLocal(txt) { if ($('#local').hidden) abreLocal(txt); else desenhaLocal(txt); }
+function closePlacePanel() { $('#place-panel').hidden = true; document.body.classList.remove('place-open'); }
+function placeNotice(txt) { if ($('#place-panel').hidden) openPlacePanel(txt); else renderPlacePanel(txt); }
 
-function iniciaEscolha() {
-  fechaLocal();
-  fechaFolha();
-  est.escolhendoLocal = true;
-  document.body.classList.add('escolhendo');
-  $('#escolha').hidden = false;
-  if (mapa.z < 15) mapa.z = 15;
-  desenha();
+function startPick() {
+  closePlacePanel();
+  closeSheet();
+  state.pickingPlace = true;
+  document.body.classList.add('picking');
+  $('#pick-bar').hidden = false;
+  if (view.z < 15) view.z = 15;
+  render();
 }
-function terminaEscolha() {
-  est.escolhendoLocal = false;
-  document.body.classList.remove('escolhendo');
-  $('#escolha').hidden = true;
-  desenha();
+function endPick() {
+  state.pickingPlace = false;
+  document.body.classList.remove('picking');
+  $('#pick-bar').hidden = true;
+  render();
 }
-async function confirmaEscolha() {
-  const [lat, lon] = mapa.centro;
-  terminaEscolha();
-  await paradasEm(lat, lon);
-  definirLocal(lat, lon, nomePerto(lat, lon), 'manual', { endereco: true });
+async function confirmPick() {
+  const [lat, lon] = view.center;
+  endPick();
+  await loadStopsAround(lat, lon);
+  setPlace(lat, lon, nearbyName(lat, lon), 'manual', { address: true });
 }
 
 /* ---------- boot ---------- */
-async function inicia() {
-  carrega();
+async function init() {
+  loadState();
   const q = new URLSearchParams(location.search);
-  const salvo = localSalvo();
-  if (q.get('em')) {
-    const [la, lo] = q.get('em').split(',').map(Number);
-    if (isFinite(la) && isFinite(lo)) { est.eu = [la, lo]; est.temLocal = true; est.local = { modo: 'manual', nome: 'Local escolhido' }; }
-  } else if (salvo && salvo.modo === 'manual' && isFinite(salvo.lat)) {
-    est.eu = [salvo.lat, salvo.lon];
-    est.temLocal = true;
-    est.local = { modo: 'manual', nome: salvo.nome || 'Local escolhido' };
+  const saved = savedPlace();
+  if (q.get('at')) {
+    const [la, lo] = q.get('at').split(',').map(Number);
+    if (isFinite(la) && isFinite(lo)) { state.here = [la, lo]; state.hasPlace = true; state.place = { mode: 'manual', name: 'Local escolhido' }; }
+  } else if (saved && saved.mode === 'manual' && isFinite(saved.lat)) {
+    state.here = [saved.lat, saved.lon];
+    state.hasPlace = true;
+    state.place = { mode: 'manual', name: saved.name || 'Local escolhido' };
   }
-  if (q.get('linhas')) { est.minhas = q.get('linhas').split(',').filter(Boolean).slice(0, 8); salva(); }
-  aplicaTema();
-  mapa.centro = [...est.eu];
-  mapa.z = 15;
-  ligaFolha();
+  if (q.get('lines')) { state.myLines = q.get('lines').split(',').filter(Boolean).slice(0, 8); saveState(); }
+  applyTheme();
+  view.center = [...state.here];
+  view.z = 15;
+  wireSheet();
 
-  const campo = $('#campo');
-  campo.addEventListener('focus', abreBusca);
-  campo.addEventListener('input', () => { est.busca = campo.value; desenhaSugestoes(); });
-  campo.addEventListener('keydown', e => { if (e.key === 'Escape') fechaBusca(); });
-  $('#barra-icone').onclick = () => est.buscando ? fechaBusca() : campo.focus();
-  $('#lupa').onclick = () => campo.focus();
-  $('#fab-local').onclick = () => usarGps(false);
-  $('#onde').onclick = () => abreLocal();
-  $('#local-fechar').onclick = fechaLocal;
-  $('#local-campo').addEventListener('input', () => desenhaLocal());
-  $('#local-campo').addEventListener('keydown', e => {
-    const v = $('#local-campo').value.trim();
-    if (e.key === 'Enter' && v.length >= 3) buscaEndereco(v);
+  const field = $('#search-field');
+  field.addEventListener('focus', openSearch);
+  field.addEventListener('input', () => { state.query = field.value; renderSuggestions(); });
+  field.addEventListener('keydown', e => { if (e.key === 'Escape') closeSearch(); });
+  $('#bar-icon').onclick = () => state.searching ? closeSearch() : field.focus();
+  $('#search-btn').onclick = () => field.focus();
+  $('#fab-locate').onclick = () => useGps(false);
+  $('#where').onclick = () => openPlacePanel();
+  $('#place-close').onclick = closePlacePanel;
+  $('#place-field').addEventListener('input', () => renderPlacePanel());
+  $('#place-field').addEventListener('keydown', e => {
+    const v = $('#place-field').value.trim();
+    if (e.key === 'Enter' && v.length >= 3) searchAddress(v);
   });
-  $('#escolha-cancelar').onclick = terminaEscolha;
-  $('#escolha-ok').onclick = confirmaEscolha;
-  $('#engrenagem').onclick = abreAjustes;
-  $('#ajustes-voltar').onclick = () => { $('#ajustes').hidden = true; };
+  $('#pick-cancel').onclick = endPick;
+  $('#pick-ok').onclick = confirmPick;
+  $('#gear').onclick = openSettings;
+  $('#settings-back').onclick = () => { $('#settings').hidden = true; };
 
-  [est.catalogo, est.calendario] = await Promise.all([
-    pega(`${EST}/lines.json`).catch(() => []),
-    pega(`${EST}/calendar.json`).catch(() => null),
+  [state.catalog, state.calendar] = await Promise.all([
+    getJson(`${STATIC}/lines.json`).catch(() => []),
+    getJson(`${STATIC}/calendar.json`).catch(() => null),
   ]);
-  diaCache.em = -1;
-  est.cores = new Map(est.catalogo.map(c => [c[0], [c[5] || '', c[6] || '']]));
-  await paradasEm(est.eu[0], est.eu[1]);
-  await Promise.all(est.minhas.map(bundle));
-  desenha();
-  await atualiza();
-  if (q.get('parada')) {
-    const p = est.paradas.get(q.get('parada'));
-    if (p) abreFolha(p);
+  dayCache.at = -1;
+  state.colors = new Map(state.catalog.map(c => [c[0], [c[5] || '', c[6] || '']]));
+  await loadStopsAround(state.here[0], state.here[1]);
+  await Promise.all(state.myLines.map(bundle));
+  render();
+  await refresh();
+  if (q.get('stop')) {
+    const p = state.stops.get(q.get('stop'));
+    if (p) openSheet(p);
   }
-  if (q.get('busca') != null) {
-    est.busca = q.get('busca');
-    $('#campo').value = est.busca;
-    abreBusca();
+  if (q.get('search') != null) {
+    state.query = q.get('search');
+    $('#search-field').value = state.query;
+    openSearch();
   }
-  atualizaOnde();
-  if (q.get('escolher')) iniciaEscolha();
-  else if (!q.get('em') && est.local.modo !== 'manual') usarGps(true);
-  setInterval(atualiza, RECARGA_MS);
-  setInterval(desenhaBalao, 5000);
+  updateWhere();
+  if (q.get('pick')) startPick();
+  else if (!q.get('at') && state.place.mode !== 'manual') useGps(true);
+  setInterval(refresh, REFRESH_MS);
+  setInterval(renderCallout, 5000);
 }

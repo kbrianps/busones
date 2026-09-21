@@ -939,8 +939,8 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
                         .entry(st.id.as_str())
                         .or_default()
                         .push(route.short_name.as_str());
-                    let (nome, sub) = stop_label(&st.name);
-                    json!([st.id, (st.lat * 1e5).round() / 1e5, (st.lon * 1e5).round() / 1e5, nome, s.dist.round(), sub])
+                    let (name, sub) = stop_label(&st.name);
+                    json!([st.id, (st.lat * 1e5).round() / 1e5, (st.lon * 1e5).round() / 1e5, name, s.dist.round(), sub])
                 })
                 .collect();
             dirs.push(json!({
@@ -989,7 +989,7 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
     // Every line with its destinations, any other code it answers to and its
     // official colours, so a rider can add a line by number, by old code or by
     // where it goes, including lines that do not pass near them.
-    let mut catalogo: Vec<serde_json::Value> = g
+    let mut catalog: Vec<serde_json::Value> = g
         .routes
         .iter()
         .map(|r| {
@@ -1004,20 +1004,20 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
             json!([r.short_name, r.long_name, r.route_type, dests, r.aka, r.color, r.text_color])
         })
         .collect();
-    catalogo.sort_by(|a, b| a[0].as_str().cmp(&b[0].as_str()));
-    write_json(&out.join("lines.json"), &json!(catalogo))?;
+    catalog.sort_by(|a, b| a[0].as_str().cmp(&b[0].as_str()));
+    write_json(&out.join("lines.json"), &json!(catalog))?;
 
     // How often each line runs, hour by hour, for ranking the lines near you
     // by walk plus expected wait. The shortest headway across a line's shapes
     // stands for the line; per-direction detail stays in its own bundle.
     let mut freq = serde_json::Map::new();
     for r in &g.routes {
-        let mut melhor = [[0u16; 24]; 3];
+        let mut best = [[0u16; 24]; 3];
         for &si in &r.shapes {
             for f in &g.shape(si).freq {
                 let (svc, h0, h1, min) = (f[0] as usize, f[1] as usize, f[2] as usize, f[3]);
                 for h in h0..h1.min(24) {
-                    let cur = &mut melhor[svc.min(2)][h];
+                    let cur = &mut best[svc.min(2)][h];
                     if *cur == 0 || min < *cur {
                         *cur = min;
                     }
@@ -1025,18 +1025,18 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
             }
         }
         let mut runs = Vec::new();
-        for (svc, horas) in melhor.iter().enumerate() {
+        for (svc, hours) in best.iter().enumerate() {
             let mut h = 0;
             while h < 24 {
-                if horas[h] == 0 {
+                if hours[h] == 0 {
                     h += 1;
                     continue;
                 }
-                let ini = h;
-                while h + 1 < 24 && horas[h + 1] == horas[ini] {
+                let start = h;
+                while h + 1 < 24 && hours[h + 1] == hours[start] {
                     h += 1;
                 }
-                runs.push(json!([svc, ini, h + 1, horas[ini]]));
+                runs.push(json!([svc, start, h + 1, hours[start]]));
                 h += 1;
             }
         }

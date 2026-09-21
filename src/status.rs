@@ -81,7 +81,7 @@ pub async fn serve(addr: std::net::SocketAddr, state: AppState) -> anyhow::Resul
 
 type Q = axum::extract::Query<std::collections::HashMap<String, String>>;
 
-fn json_publico(status: axum::http::StatusCode, body: String) -> axum::response::Response {
+fn public_json(status: axum::http::StatusCode, body: String) -> axum::response::Response {
     use axum::response::IntoResponse;
     (
         status,
@@ -97,12 +97,12 @@ fn json_publico(status: axum::http::StatusCode, body: String) -> axum::response:
 }
 
 async fn geocode(axum::extract::State(st): axum::extract::State<AppState>, q: Q) -> axum::response::Response {
-    let texto = q.get("q").map(String::as_str).unwrap_or("");
-    match st.geo.busca(texto).await {
-        Ok(v) => json_publico(axum::http::StatusCode::OK, serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())),
+    let query = q.get("q").map(String::as_str).unwrap_or("");
+    match st.geo.search(query).await {
+        Ok(v) => public_json(axum::http::StatusCode::OK, serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())),
         Err(e) => {
             tracing::warn!(error = %e, "geocode failed");
-            json_publico(axum::http::StatusCode::BAD_GATEWAY, r#"{"error":"geocoder unavailable"}"#.into())
+            public_json(axum::http::StatusCode::BAD_GATEWAY, r#"{"error":"geocoder unavailable"}"#.into())
         }
     }
 }
@@ -112,13 +112,13 @@ async fn reverse(axum::extract::State(st): axum::extract::State<AppState>, q: Q)
         q.get("lat").and_then(|v| v.parse::<f64>().ok()),
         q.get("lon").and_then(|v| v.parse::<f64>().ok()),
     ) else {
-        return json_publico(axum::http::StatusCode::BAD_REQUEST, r#"{"error":"lat and lon required"}"#.into());
+        return public_json(axum::http::StatusCode::BAD_REQUEST, r#"{"error":"lat and lon required"}"#.into());
     };
-    match st.geo.reverso(lat, lon).await {
-        Ok(v) => json_publico(axum::http::StatusCode::OK, serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
+    match st.geo.reverse(lat, lon).await {
+        Ok(v) => public_json(axum::http::StatusCode::OK, serde_json::to_string(&v).unwrap_or_else(|_| "null".into())),
         Err(e) => {
             tracing::warn!(error = %e, "reverse geocode failed");
-            json_publico(axum::http::StatusCode::BAD_GATEWAY, r#"{"error":"geocoder unavailable"}"#.into())
+            public_json(axum::http::StatusCode::BAD_GATEWAY, r#"{"error":"geocoder unavailable"}"#.into())
         }
     }
 }
