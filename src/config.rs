@@ -5,6 +5,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// The service table shipped with the repository.
+pub const DEFAULT_ALIASES: &str = "config/service-aliases.json";
+
 pub struct Config {
     pub its_url: String,
     pub brt_url: String,
@@ -34,7 +37,7 @@ impl Config {
                 "https://dados.mobilidade.rio/gtfs/realtime/brt/vehicle-positions",
             ),
             gtfs_path: env_or("BUSONES_GTFS", "data/gtfs.json.gz").into(),
-            aliases_path: env_or("BUSONES_ALIASES", "data/service-aliases.json").into(),
+            aliases_path: env_or("BUSONES_ALIASES", DEFAULT_ALIASES).into(),
             runtime_dir: env_or("BUSONES_RUNTIME_DIR", "run").into(),
             state_dir: env_or("BUSONES_STATE_DIR", "state").into(),
             status_addr: env_or("BUSONES_STATUS_ADDR", "127.0.0.1:8081").parse()?,

@@ -101,10 +101,18 @@ pub fn classify_service(service: &str) -> ServiceState {
 
 /// Codes the operators use to say a bus is not carrying passengers.
 fn is_out_of_service(s: &str) -> bool {
-    if s == "0" {
+    // "0" and "000" alike.
+    if s.bytes().all(|c| c == b'0') {
         return true;
     }
     let upper = s.to_ascii_uppercase();
+    // Garage runs come as "1 GAR", "GAR 2" and the like.
+    if upper
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| w == "GAR" || w.starts_with("GARAG"))
+    {
+        return true;
+    }
     matches!(
         upper.as_str(),
         "GARAGEM"
@@ -119,6 +127,8 @@ fn is_out_of_service(s: &str) -> bool {
             | "RECOLHE"
             | "RECOLHIDO"
             | "TREINAMENTO"
+            | "TREINO"
+            | "VISTORIA"
             | "SEM LINHA"
     )
 }
@@ -197,10 +207,13 @@ mod tests {
 
     #[test]
     fn operator_state_codes_are_not_services() {
-        for s in ["GARAGEM", "garagem", "Manutencao", "RESERVADO", "FORA DE OP", "0"] {
+        for s in [
+            "GARAGEM", "garagem", "Manutencao", "RESERVADO", "FORA DE OP", "0", "000", "1 GAR", "gar-2",
+            "TREINO", "Vistoria",
+        ] {
             assert_eq!(classify_service(s), ServiceState::OutOfService, "{s:?}");
         }
-        for s in ["474", "SN238", "LECD138", "2343", "10"] {
+        for s in ["474", "SN238", "LECD138", "2343", "10", "001", "2305 - A"] {
             assert_eq!(classify_service(s), ServiceState::Named, "{s:?}");
         }
         // A blank service is one vendor staying quiet, not a parked bus.

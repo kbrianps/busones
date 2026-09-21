@@ -96,10 +96,12 @@ deployment differs from a laptop: `BUSONES_ITS_URL`, `BUSONES_BRT_URL`,
 `BUSONES_STATUS_ADDR`, `BUSONES_CELL_ZOOM`, `BUSONES_WARM_MINUTES`,
 `BUSONES_PUBLISH_SECS`, `BUSONES_BRT_SECS`, `BUSONES_LOG`.
 
-`data/service-aliases.json` is an optional `{"live code": "route_short_name"}`
-map for services the published GTFS does not contain. Zero padding is handled
-without it (`7` finds `007`). Codes with no route are still tracked and shown;
-they simply get no direction.
+`config/service-aliases.json` reconciles live service codes with the GTFS:
+aliases (buses report 685 for what the GTFS calls `LECD140`) and codes that name
+no line. Every entry is backed by evidence from `scripts/alias-evidence.py`; see
+`config/README.md`. Zero padding is handled without it (`7` finds `007`). Codes
+with no route are still tracked and published as lines without a route; they
+simply get no direction and no arrival times.
 
 ## What it publishes
 
@@ -111,6 +113,7 @@ each file:
 | `lines/{line}.json` | every tracked vehicle of that line, both directions |
 | `cells/{z}/{x}/{y}.json` | the same vehicles grouped by map tile, for "near me" |
 | `fleet.json` | every vehicle in one file, for a city-wide overview only |
+| `live-lines.json` | `[line, buses, has_route]` for every line on the road now, for the search |
 | `index.json` | counts, per-line totals, feed health, generation time |
 | `status.json` | served by the process, never a file (see below) |
 

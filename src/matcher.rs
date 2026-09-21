@@ -304,6 +304,7 @@ mod tests {
                 long_name: "Vai e volta".into(),
                 route_type: 700,
                 shapes: vec![0],
+                aka: Vec::new(),
             }],
             shapes: vec![Shape {
                 id: "sh".into(),

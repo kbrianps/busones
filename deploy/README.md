@@ -21,6 +21,15 @@ sudo install -m 0644 data/gtfs.json.gz /var/lib/busones/gtfs.json.gz
 Re-run when the published GTFS changes; the script compares the ETag first. A
 daily timer is enough, the feed moves every few months.
 
+The service table ships with the repository. Install it next to the binary and
+re-export the client bundles whenever it or the feed changes, so both agree on
+line names (see `config/README.md`):
+
+```bash
+sudo install -D -m 0644 config/service-aliases.json /usr/local/share/busones/service-aliases.json
+BUSONES_ALIASES=config/service-aliases.json busones gtfs export data/gtfs.json.gz dist
+```
+
 ## 3. Services
 
 ```bash

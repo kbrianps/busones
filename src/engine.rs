@@ -215,7 +215,9 @@ impl Engine {
         }
         let service = f.service.clone().unwrap_or_default();
         let service_state = crate::model::classify_service(&service);
-        if service_state == ServiceState::OutOfService {
+        if service_state == ServiceState::OutOfService
+            || self.gtfs.not_service.contains(service.trim())
+        {
             self.vehicles.remove(&f.vehicle);
             return Outcome::OutOfService;
         }
@@ -789,6 +791,7 @@ mod tests {
                 long_name: "Teste".into(),
                 route_type: 700,
                 shapes: vec![0],
+                aka: Vec::new(),
             }],
             shapes: vec![Shape {
                 id: "sh1".into(),
@@ -863,6 +866,19 @@ mod tests {
         let now = 1_800_000_000;
         let mut f = fix_at(&g, "A1", now, 1000.0, Vendor::Zirix);
         f.service = Some("GARAGEM".into());
+        assert_eq!(e.apply(f, now), Outcome::OutOfService);
+        assert!(e.snapshot().is_empty());
+    }
+
+    #[test]
+    fn codes_the_service_table_rules_out_never_reach_the_map() {
+        let mut g = Arc::try_unwrap(gtfs()).ok().unwrap();
+        g.not_service.insert("3".into());
+        let g = Arc::new(g);
+        let mut e = Engine::new(g.clone());
+        let now = 1_800_000_000;
+        let mut f = fix_at(&g, "A1", now, 1000.0, Vendor::Conecta);
+        f.service = Some("3".into());
         assert_eq!(e.apply(f, now), Outcome::OutOfService);
         assert!(e.snapshot().is_empty());
     }

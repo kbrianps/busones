@@ -15,6 +15,9 @@
   --borda: #dadce0;
   --estrela: #f9ab00;
   --alerta: #d93025;
+  /* Attention without alarm: no bus reporting, not running now. Red stays for
+     what removes something. */
+  --aviso: #b06000;
   --sombra: 0 1px 3px rgba(60, 64, 67, .3), 0 4px 8px 3px rgba(60, 64, 67, .15);
   --sombra-leve: 0 1px 2px rgba(60, 64, 67, .3), 0 1px 3px 1px rgba(60, 64, 67, .15);
 }
@@ -26,6 +29,7 @@
   --borda: #3c4043;
   --verde-vivo: #81c995;
   --marinho: #3f51b5;
+  --aviso: #fdd663;
   --sombra: 0 1px 3px rgba(0, 0, 0, .6), 0 4px 8px 3px rgba(0, 0, 0, .35);
   --sombra-leve: 0 1px 3px rgba(0, 0, 0, .6);
 }
@@ -89,7 +93,9 @@ body.buscando #onde { display: none; }
 .sug-txt { min-width: 0; flex: 1; font-size: 15px; }
 .sug-txt b { font-weight: 700; }
 .sug-txt small { display: block; font-size: 12.5px; color: var(--texto-2); margin-top: 1px; }
+.sug-txt small.aviso { color: var(--aviso); }
 .sug-vazio { padding: 14px 16px; color: var(--texto-2); font-size: 14px; }
+.sug-nota { padding: 2px 16px 12px; color: var(--texto-2); font-size: 12.5px; line-height: 1.4; }
 
 /* ---------- line badge (navy, like the stop sheet rows) ---------- */
 .selo {
@@ -157,6 +163,11 @@ body.folha-aberta #trilho, body.local-aberto #trilho { display: none; }
   content: ''; position: absolute; left: -6px; top: var(--seta, 16px); width: 12px; height: 12px;
   background: var(--fundo); transform: rotate(45deg); box-shadow: -2px 2px 4px rgba(15, 23, 42, .06);
 }
+.menu-estado {
+  padding: 8px 14px 9px; margin-bottom: 3px; max-width: 250px;
+  font-size: 12.5px; line-height: 1.35; color: var(--texto-2); border-bottom: 1px solid var(--borda);
+}
+.menu-estado.aviso { color: var(--aviso); }
 .menu-linha button { position: relative; text-align: left; padding: 11px 14px; border-radius: 8px; color: var(--texto); }
 .menu-linha button:active { background: var(--fundo-2); }
 .menu-linha button.ativo { font-weight: 600; color: var(--cor); }

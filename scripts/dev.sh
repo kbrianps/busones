@@ -4,7 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 [ -f data/gtfs.json.gz ] || ./scripts/fetch-gtfs.sh
-[ -d dist/lines ] || cargo run --release --quiet -- gtfs export data/gtfs.json.gz dist
+# Re-export when the feed or the service table changed since the last export.
+if [ ! -f dist/lines.json ] || [ data/gtfs.json.gz -nt dist/lines.json ] || [ config/service-aliases.json -nt dist/lines.json ]; then
+  cargo run --release --quiet -- gtfs export data/gtfs.json.gz dist
+fi
 if [ ! -f dist/base/places.json ]; then
   if [ -f data/rio.pmtiles ]; then cargo run --release --quiet -- base build data/rio.pmtiles dist/base
   else ./scripts/fetch-basemap.sh; fi

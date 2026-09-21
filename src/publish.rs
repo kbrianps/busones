@@ -183,10 +183,37 @@ impl Publisher {
         let path = self.root.join("api/v1/fleet.json");
         self.write(&path, &body, &mut st)?;
 
+        let body = self.render_live_lines(outs);
+        let path = self.root.join("api/v1/live-lines.json");
+        self.write(&path, &body, &mut st)?;
+
         let body = serde_json::to_vec(&index)?;
         let path = self.root.join("api/v1/index.json");
         self.write(&path, &body, &mut st)?;
         Ok(st)
+    }
+
+    /// `[[line, buses, has_route]]` for every line with a bus on the road now,
+    /// busiest first. Lets the search say "3 ônibus agora" or "nenhum ônibus
+    /// com sinal" without fetching every line, and find lines the GTFS does not
+    /// have (`has_route` 0). Stale and parked buses do not count.
+    fn render_live_lines(&self, outs: &[Out]) -> Vec<u8> {
+        let mut n: HashMap<&str, usize> = HashMap::new();
+        for o in outs {
+            if o.phase != "stale" && o.phase != "parked" {
+                *n.entry(o.line.as_str()).or_default() += 1;
+            }
+        }
+        let mut rows: Vec<(&str, usize)> = n.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let rows: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|(l, c)| {
+                let known = self.lines.binary_search(&crate::gtfs::sanitize(l)).is_ok();
+                serde_json::json!([l, c, known as u8])
+            })
+            .collect();
+        serde_json::to_vec(&rows).unwrap_or_else(|_| b"[]".to_vec())
     }
 
     fn write(&mut self, path: &Path, body: &[u8], st: &mut Stats) -> Result<()> {
@@ -399,6 +426,7 @@ mod tests {
             long_name: String::new(),
             route_type: 700,
             shapes: vec![],
+            aka: Vec::new(),
         });
         g.finish();
         let mut p = Publisher::new(dir.clone(), 13, &g).unwrap();
@@ -412,6 +440,35 @@ mod tests {
         assert_eq!(second.files_written, 0, "nothing changed, nothing rewritten");
         assert!(dir.join("api/v1/lines/474.json").exists());
         assert!(dir.join("api/v1/lines/474.json.gz").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_lines_count_buses_and_flag_lines_without_a_route() {
+        let dir = std::env::temp_dir().join(format!("busones-live-{}", std::process::id()));
+        let mut g = Gtfs::default();
+        g.routes.push(crate::gtfs::Route {
+            id: "R".into(),
+            short_name: "474".into(),
+            long_name: String::new(),
+            route_type: 700,
+            shapes: vec![],
+            aka: Vec::new(),
+        });
+        g.finish();
+        let p = Publisher::new(dir.clone(), 13, &g).unwrap();
+        let mut a = out("B1");
+        let mut b = out("B2");
+        let mut c = out("B3");
+        let mut d = out("B4");
+        a.line = "474".into();
+        b.line = "474".into();
+        c.line = "LECD153".into();
+        d.line = "474".into();
+        d.phase = "stale";
+        let v: serde_json::Value =
+            serde_json::from_slice(&p.render_live_lines(&[a, b, c, d])).unwrap();
+        assert_eq!(v, serde_json::json!([["474", 2, 1], ["LECD153", 1, 0]]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

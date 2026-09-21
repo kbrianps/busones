@@ -9,7 +9,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufReader, Write};
 use std::path::Path;
 
@@ -23,6 +23,41 @@ pub struct Route {
     pub long_name: String,
     pub route_type: u16,
     pub shapes: Vec<u32>,
+    /// Other codes this line answers to, from the service table.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aka: Vec<String>,
+}
+
+/// Live service codes the published GTFS spells differently, and codes that
+/// are not passenger lines at all. Lives in `config/service-aliases.json`,
+/// with the evidence for every entry in `config/README.md`.
+#[derive(Deserialize, Default)]
+pub struct ServiceTable {
+    /// Live code -> GTFS `route_short_name`.
+    #[serde(default)]
+    pub aliases: BTreeMap<String, String>,
+    /// Live codes that name no line: vendor placeholders that follow no route.
+    #[serde(default)]
+    pub not_service: Vec<String>,
+}
+
+impl ServiceTable {
+    /// A missing file is an empty table; a malformed one is an error, so a typo
+    /// cannot silently hide every alias.
+    pub fn load(path: &Path) -> Result<Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing service table {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+}
+
+/// The SMTR publishes new lines under a provisional `LECD` code before they
+/// get their public number.
+fn is_provisional(code: &str) -> bool {
+    code.starts_with("LECD")
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -133,8 +168,9 @@ pub struct Gtfs {
     pub by_shape_id: HashMap<String, u32>,
     #[serde(skip)]
     pub by_trip: HashMap<String, u32>,
+    /// Live codes that are not passenger lines, from the service table.
     #[serde(skip)]
-    pub aliases: HashMap<String, String>,
+    pub not_service: HashSet<String>,
 }
 
 impl Gtfs {
@@ -161,12 +197,7 @@ impl Gtfs {
             st.x = x;
             st.y = y;
         }
-        self.by_short = self
-            .routes
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.short_name.clone(), i as u32))
-            .collect();
+        self.index_names();
         self.by_shape_id = self
             .shapes
             .iter()
@@ -176,11 +207,56 @@ impl Gtfs {
         self.by_trip = self.trip_shape.iter().cloned().collect();
     }
 
+    /// Every name a route answers to, the public one first so it wins a clash.
+    fn index_names(&mut self) {
+        let mut by_short = HashMap::new();
+        for (i, r) in self.routes.iter().enumerate() {
+            by_short.insert(r.short_name.clone(), i as u32);
+        }
+        for (i, r) in self.routes.iter().enumerate() {
+            for a in &r.aka {
+                by_short.entry(a.clone()).or_insert(i as u32);
+            }
+        }
+        self.by_short = by_short;
+    }
+
+    /// Applies the service table and returns what could not be applied.
+    ///
+    /// The GTFS names some lines by their provisional `LECD` code while buses
+    /// and riders use the public number (buses on LECD140 report 685), and it
+    /// goes the other way once a line gets its number (buses still report
+    /// LECD156 for what the GTFS now calls 856). Either way the line is shown
+    /// under its public name and the other code keeps resolving to it.
+    pub fn apply_services(&mut self, t: &ServiceTable) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (live, target) in &t.aliases {
+            let Some(&i) = self.by_short.get(target.as_str()) else {
+                problems.push(format!("{live} -> {target}: no such route"));
+                continue;
+            };
+            if self.by_short.get(live.as_str()).is_some_and(|&j| j != i) {
+                problems.push(format!("{live} -> {target}: {live} is already another route"));
+                continue;
+            }
+            let r = &mut self.routes[i as usize];
+            if is_provisional(&r.short_name) && !is_provisional(live) {
+                let old = std::mem::replace(&mut r.short_name, live.clone());
+                r.aka.push(old);
+            } else if !r.aka.contains(live) && r.short_name != *live {
+                r.aka.push(live.clone());
+            }
+            self.index_names();
+        }
+        self.not_service = t.not_service.iter().map(|s| s.trim().to_string()).collect();
+        problems
+    }
+
     /// Resolves a live `servico` code to a route.
     ///
     /// The feed and the published zip disagree on zero padding (the feed says
-    /// `7`, the zip says `007`), so both forms are tried before falling back to
-    /// the operator-maintained alias table.
+    /// `7`, the zip says `007`), so both forms are tried. Names from the service
+    /// table are already in the index.
     pub fn route_of_service(&self, service: &str) -> Option<u32> {
         let s = service.trim();
         if s.is_empty() {
@@ -203,10 +279,7 @@ impl Gtfs {
                 }
             }
         }
-        self.aliases
-            .get(s)
-            .and_then(|target| self.by_short.get(target))
-            .copied()
+        None
     }
 
     pub fn shape(&self, idx: u32) -> &Shape {
@@ -353,6 +426,7 @@ pub fn build(dir: &Path) -> Result<Gtfs> {
                 long_name: csv::get(rec, cl).to_string(),
                 route_type: csv::get(rec, ct).parse().unwrap_or(0),
                 shapes: Vec::new(),
+                aka: Vec::new(),
             });
         }
     }
@@ -696,6 +770,7 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
     std::fs::create_dir_all(out.join("lines"))?;
 
     let mut stop_lines: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut written: HashSet<String> = HashSet::new();
     for route in &g.routes {
         let mut dirs = Vec::new();
         for &si in &route.shapes {
@@ -736,6 +811,16 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
         });
         let name = sanitize(&route.short_name);
         write_json(&out.join("lines").join(format!("{name}.json")), &body)?;
+        written.insert(format!("{name}.json"));
+    }
+    // A line renamed by the service table must not leave its old bundle behind.
+    for e in std::fs::read_dir(out.join("lines"))? {
+        let e = e?;
+        let f = e.file_name().to_string_lossy().into_owned();
+        let base = f.strip_suffix(".gz").unwrap_or(&f);
+        if base.ends_with(".json") && !written.contains(base) {
+            std::fs::remove_file(e.path())?;
+        }
     }
 
     let index: HashMap<&str, Vec<&str>> = stop_lines
@@ -747,8 +832,9 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
         })
         .collect();
 
-    // Every line with its destinations, so a rider can add a line by number or
-    // by where it goes, including lines that do not pass near them.
+    // Every line with its destinations and any other code it answers to, so a
+    // rider can add a line by number, by old code or by where it goes,
+    // including lines that do not pass near them.
     let mut catalogo: Vec<serde_json::Value> = g
         .routes
         .iter()
@@ -761,7 +847,7 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
                 .collect();
             dests.sort_unstable();
             dests.dedup();
-            json!([r.short_name, r.long_name, r.route_type, dests])
+            json!([r.short_name, r.long_name, r.route_type, dests, r.aka])
         })
         .collect();
     catalogo.sort_by(|a, b| a[0].as_str().cmp(&b[0].as_str()));
@@ -936,6 +1022,7 @@ mod tests {
                 long_name: "Teste".into(),
                 route_type: 700,
                 shapes: vec![0],
+                aka: Vec::new(),
             }],
             shapes: vec![Shape {
                 id: "s1".into(),
@@ -999,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn service_lookup_handles_zero_padding_and_aliases() {
+    fn service_lookup_handles_zero_padding() {
         let mut g = toy();
         g.by_short.insert("007".into(), 0);
         assert_eq!(g.route_of_service("474"), Some(0));
@@ -1007,8 +1094,41 @@ mod tests {
         assert_eq!(g.route_of_service("007"), Some(0));
         assert_eq!(g.route_of_service(""), None);
         assert_eq!(g.route_of_service("GARAGEM"), None);
-        g.aliases.insert("SVA665".into(), "474".into());
-        assert_eq!(g.route_of_service("SVA665"), Some(0));
+    }
+
+    #[test]
+    fn service_table_gives_provisional_lines_their_public_name() {
+        let mut g = toy();
+        g.routes[0].short_name = "LECD140".into();
+        g.index_names();
+        let t = ServiceTable {
+            aliases: [("685".to_string(), "LECD140".to_string())].into(),
+            not_service: vec![" 3 ".into()],
+        };
+        assert!(g.apply_services(&t).is_empty());
+        assert_eq!(g.routes[0].short_name, "685", "shown under the number riders know");
+        assert_eq!(g.route_of_service("685"), Some(0));
+        assert_eq!(g.route_of_service("LECD140"), Some(0), "the old code still resolves");
+        assert!(g.not_service.contains("3"));
+    }
+
+    #[test]
+    fn service_table_keeps_a_final_number_and_reports_bad_rows() {
+        let mut g = toy();
+        g.routes[0].short_name = "856".into();
+        g.index_names();
+        let t = ServiceTable {
+            aliases: [
+                ("LECD156".to_string(), "856".to_string()),
+                ("999".to_string(), "LECD999".to_string()),
+            ]
+            .into(),
+            not_service: vec![],
+        };
+        let problems = g.apply_services(&t);
+        assert_eq!(g.routes[0].short_name, "856", "a final number is not replaced");
+        assert_eq!(g.route_of_service("LECD156"), Some(0));
+        assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
     #[test]

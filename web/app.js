@@ -115,6 +115,9 @@ const est = {
   minhas: [],
   sentido: {},
   catalogo: [],
+  /* Lines on the road now: line -> [buses, has a route]. */
+  vivas: new Map(),
+  vivasEm: 0,
   bundles: new Map(),
   frotas: new Map(),
   chegadas: [],
@@ -176,6 +179,18 @@ async function bundle(l) {
   return b;
 }
 
+/* How many buses each line has on the road, at most every 30 s. Lets the
+   search and the line menu say "3 ônibus agora" or "nenhum ônibus com sinal"
+   instead of leaving the screen silent, and finds lines whose route the SMTR
+   has not published. */
+async function carregaVivas(forcar) {
+  if (!forcar && Date.now() - est.vivasEm < 30000) return;
+  const l = await pega(`${API}/live-lines.json`).catch(() => null);
+  if (!l) return;
+  est.vivas = new Map(l.map(([linha, n, rota]) => [linha, [n, !!rota]]));
+  est.vivasEm = Date.now();
+}
+
 async function paradasEm(lat, lon) {
   const [x, y] = tile(lat, lon);
   const pedidos = [];
@@ -233,6 +248,7 @@ async function atualiza() {
       Promise.all([...cels].map(k => pega(`${API}/cells/${Z}/${k}/arrivals.json`).catch(() => []))),
       Promise.all(est.minhas.map(l => pega(`${API}/lines/${encodeURIComponent(l)}.json`).catch(() => []))),
       Promise.all(pedidosFolha),
+      carregaVivas(),
     ]);
     est.chegadas = cheg.flat();
     est.minhas.forEach((l, i) => est.frotas.set(l, frotas[i].map(v => ({ ...v, line: l }))));
@@ -312,6 +328,8 @@ function abreMenuLinha(l, ancora) {
     m.append(b);
     return b;
   };
+  const estado = estadoLinha(l);
+  if (estado) m.append(el('div', 'menu-estado' + (estado.aviso ? ' aviso' : ''), estado.txt));
   // Focus is a set: several lines can be in focus at once.
   if (est.minhas.length > 1) {
     item(est.focadas.has(l) ? 'Tirar o foco desta linha' : 'Focar nesta linha', () => focaLinha(l), 'so');
@@ -548,6 +566,7 @@ function abreBusca() {
   est.buscando = true;
   document.body.classList.add('buscando');
   if (!est.freq) carregaFreq().then(() => { if (est.buscando) desenhaSugestoes(); });
+  carregaVivas().then(() => { if (est.buscando) desenhaSugestoes(); });
   est.balao = null;
   $('#sugestoes').hidden = false;
   const ic = $('#barra-icone');
@@ -575,7 +594,7 @@ function origemDestino(c) {
   return (c[1] || c[3].join(' - ')).replace(/\s+-\s+/g, ' x ');
 }
 
-function sug(nome, legenda) {
+function sug(nome, legenda, tituloFixo) {
   const c = est.catalogo.find(x => x[0] === nome);
   const row = el('div', 'sug');
   row.setAttribute('role', 'button');
@@ -589,14 +608,15 @@ function sug(nome, legenda) {
   if (seguida) badge.style.background = corDaLinha(nome);
   const t = el('div', 'sug-txt');
   const titulo = el('div');
-  const txt = c ? origemDestino(c) : nome;
+  const txt = tituloFixo || (c ? origemDestino(c) : nome);
   const q = est.busca.trim();
   const i = q ? txt.toLowerCase().indexOf(q.toLowerCase()) : -1;
   if (i >= 0) {
     titulo.append(txt.slice(0, i), el('b', '', txt.slice(i, i + q.length)), txt.slice(i + q.length));
   } else titulo.textContent = txt;
   t.append(titulo);
-  if (legenda) t.append(el('small', '', legenda));
+  // A caption is plain text, or a line status that may carry a warning.
+  if (legenda) t.append(el('small', legenda.aviso ? 'aviso' : '', legenda.txt ?? legenda));
   row.append(e, badge, t);
   row.onclick = async () => { fechaBusca(); await segue(nome, true); enquadraLinha(nome); desenha(); };
   return row;
@@ -618,6 +638,63 @@ function freqAgora(l) {
   const h = d.getHours();
   const r = f.find(x => x[0] === svc && h >= x[1] && h < x[2]);
   return r ? r[3] : null;
+}
+
+const onibusTxt = n => n === 1 ? '1 ônibus' : `${n} ônibus`;
+
+/* Where a line stands right now, in one short sentence, or null while the
+   live counts have not arrived. Picking a line must never leave the screen
+   silent: no bus reporting, not running at this hour, and no published route
+   all say so. */
+function estadoLinha(l) {
+  const c = est.catalogo.find(x => x[0] === l);
+  const viva = est.vivas.get(l);
+  const n = viva ? viva[0] : 0;
+  if (!c) {
+    if (n) return { txt: `Rota não publicada pela SMTR · ${onibusTxt(n)} agora` };
+    return est.vivasEm ? { txt: 'Nenhum ônibus desta linha nos dados da SMTR agora', aviso: true } : null;
+  }
+  const h = freqAgora(l);
+  const cada = h ? ` · a cada ~${h} min` : '';
+  if (n) return { txt: `${onibusTxt(n)} agora${cada}` };
+  if (!est.vivasEm) return h ? { txt: `A cada ~${h} min` } : null;
+  const f = est.freq && est.freq[l];
+  if (f && h == null) {
+    const d = new Date();
+    const svc = d.getDay() === 0 ? 2 : d.getDay() === 6 ? 1 : 0;
+    const hoje = f.filter(x => x[0] === svc);
+    const prox = hoje.map(x => x[1]).filter(x => x > d.getHours()).sort((a, b) => a - b)[0];
+    if (prox != null) return { txt: `Não opera neste horário · volta às ${prox} h`, aviso: true };
+    return { txt: hoje.length ? 'Não opera mais hoje' : 'Não opera hoje', aviso: true };
+  }
+  return { txt: `Nenhum ônibus com sinal agora${cada}`, aviso: true };
+}
+
+/* Codes that differ from q by at most two edits, closest first, for a search
+   that found nothing: "2335" typed as "2353", "SV744" for "SV774". */
+function parecidas(q) {
+  const lev = (a, b) => {
+    const d = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      let prev = d[0];
+      d[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const t = d[j];
+        d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+        prev = t;
+      }
+    }
+    return d[b.length];
+  };
+  const alvo = q.toUpperCase();
+  const codigos = new Set(est.catalogo.map(c => c[0]));
+  for (const [l, [, rota]] of est.vivas) if (!rota) codigos.add(l);
+  return [...codigos]
+    .map(l => ({ l, d: lev(alvo, l.toUpperCase()) }))
+    .filter(x => x.d <= 2)
+    .sort((a, b) => a.d - b.d || a.l.length - b.l.length)
+    .slice(0, 3)
+    .map(x => x.l);
 }
 
 /* Lines near you, best first. "Best" is the time until you are on board: the
@@ -646,14 +723,26 @@ function desenhaSugestoes() {
   if (q) {
     const hits = est.catalogo.filter(c =>
       c[0].toLowerCase().startsWith(q) || c[1].toLowerCase().includes(q) ||
-      c[3].some(d => d.toLowerCase().includes(q))).slice(0, 30);
-    if (!hits.length) box.append(el('div', 'sug-vazio', `Nenhuma linha com "${est.busca}".`));
-    for (const c of hits) box.append(sug(c[0]));
+      c[3].some(d => d.toLowerCase().includes(q)) ||
+      (c[4] || []).some(a => a.toLowerCase().startsWith(q))).slice(0, 30);
+    // Lines on the road whose route the SMTR has not published yet.
+    const semRota = [...est.vivas].filter(([l, [, rota]]) => !rota && l.toLowerCase().startsWith(q));
+    for (const c of hits) box.append(sug(c[0], estadoLinha(c[0])));
+    for (const [l, [n]] of semRota) box.append(sug(l, `${onibusTxt(n)} agora`, 'Rota não publicada pela SMTR'));
+    if (!hits.length && !semRota.length) {
+      box.append(el('div', 'sug-vazio', `Nenhuma linha com "${est.busca}".`));
+      const p = parecidas(est.busca.trim());
+      if (p.length) {
+        box.append(el('div', 'sug-grupo', 'Talvez você procure'));
+        for (const l of p) box.append(sug(l, estadoLinha(l)));
+      }
+      box.append(el('p', 'sug-nota', 'O busones mostra as linhas municipais do Rio e o BRT. Linhas intermunicipais e de outros municípios não fazem parte dos dados da SMTR.'));
+    }
     return;
   }
   if (est.minhas.length) {
     box.append(el('div', 'sug-grupo', 'Suas linhas'));
-    for (const l of est.minhas) box.append(sug(l));
+    for (const l of est.minhas) box.append(sug(l, estadoLinha(l)));
   }
   const perto = linhasPerto().filter(x => !est.minhas.includes(x.l));
   box.append(el('div', 'sug-grupo', perto.length ? 'Perto de você' : 'Nenhuma linha perto de você'));
@@ -708,7 +797,13 @@ function focaLinha(l) {
 /* Frame you, the stop you would use, and the buses on their way to it. */
 function enquadraLinha(l) {
   const d = dirAtual(l);
-  if (!d) return;
+  if (!d) {
+    // A line without a route: you and its nearest buses.
+    const perto = (est.frotas.get(l) || []).map(v => [v.lat, v.lon])
+      .sort((a, b) => distM(est.eu, a) - distM(est.eu, b)).slice(0, 3);
+    if (perto.length) enquadraPontos([est.eu, ...perto]);
+    return;
+  }
   const p = paradaPerto(d);
   const pts = [est.eu];
   if (p) pts.push([p.lat, p.lon]);
@@ -738,7 +833,9 @@ function desenhaBalao() {
   corpo.append(lb, info);
   b.append(corpo);
   const rod = el('div', 'balao-rodape');
-  rod.append(document.createTextNode(v.dir ? `Sentido ${v.to || v.dir}` : 'Sentido ainda não confirmado'));
+  const semRota = est.bundles.has(v.line) && !est.bundles.get(v.line);
+  rod.append(document.createTextNode(v.dir ? `Sentido ${v.to || v.dir}`
+    : semRota ? 'Rota não publicada pela SMTR' : 'Sentido ainda não confirmado'));
   const a = est.chegadas.find(x => x[7] === v.id && (!est.folha || x[0] === est.folha.id));
   if (a) {
     const f = faixa(a);
@@ -842,8 +939,14 @@ function cena() {
     if (foco.size && !foco.has(l)) continue;
     const b = est.bundles.get(l);
     const d = dirAtual(l);
-    if (!b || !d) continue;
     const cor = corDaLinha(l);
+    if (!b) {
+      // No published route: no direction to pick and no stop to wait at, so
+      // every bus of the line is shown.
+      for (const v of est.frotas.get(l) || []) addOnibus(v, cor);
+      continue;
+    }
+    if (!d) continue;
     if (est.ajustes.rota) c.rotas.push({ cor, pts: d.pts, forte: foco.has(l) });
     const p = paradaPerto(d);
     if (p && !est.folha) {
