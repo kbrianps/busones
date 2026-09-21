@@ -319,14 +319,18 @@ function drawMap() {
 
   // Buses: number badge plus heading arrow. Their line numbers, when shown,
   // keep clear of the stop labels, which are drawn on top.
-  const taken = labels.map(([x, y, t]) => labelBox(ctx, x, y, t));
+  // Your own marker is an obstacle for the labels too.
+  const mine = [];
+  if (state.hasPlace && !state.pickingPlace) {
+    const [x, y] = toScreen(state.here[0], state.here[1]);
+    mine.push(state.place.mode === 'manual' ? { x0: x - 15, y0: y - 42, x1: x + 15, y1: y + 2 } : { x0: x - 16, y0: y - 16, x1: x + 16, y1: y + 16 });
+  }
+  const placed = placeLabels(ctx, labels, mine);
+  const taken = placed.map(p => ({ ...p.box }));
   for (const o of c.buses) {
     const hit = drawBus(ctx, o, taken);
     if (hit) targets.push({ kind: 'bus', ...hit, v: o.v, color: o.color });
   }
-  // Stop labels last, so an arriving bus never hides what the stop is.
-  for (const [x, y, t] of labels) drawLabel(ctx, x, y, t, night);
-
   // You: a blue dot when it comes from GPS, a blue pin when you chose it.
   if (state.hasPlace && !state.pickingPlace) {
     const [x, y] = toScreen(state.here[0], state.here[1]);
@@ -342,22 +346,38 @@ function drawMap() {
   }
   // Choosing a place: a fixed pin in the middle, the map moves under it.
   if (state.pickingPlace) teardrop(ctx, view.W / 2, view.H / 2, HERE_COLOR, null, 1.35);
+  // Stop labels last, so neither an arriving bus nor your marker hides what
+  // the stop is.
+  for (const p of placed) drawLabel(ctx, p.box, p.txt, night);
 }
 
-/* A small white tag beside a map symbol, flipped to the left near the edge. */
-/* Where a stop label goes: to the right of the sign, or to the left near the
-   edge of the screen. */
-function labelBox(ctx, x, y, txt) {
-  ctx.font = '600 12px system-ui, -apple-system, Roboto, sans-serif';
-  const w = ctx.measureText(txt).width + 14, h = 22;
-  let lx = x + 17;
-  if (lx + w > view.W - 8) lx = x - 17 - w;
-  return { x0: lx, y0: y - h / 2, x1: lx + w, y1: y + h / 2 };
+const LABEL_FONT = '600 12px system-ui, -apple-system, Roboto, sans-serif';
+
+/* Where each stop label goes: right of its sign, else left, else nudged up
+   or down, so two stops close together never print one label over the
+   other, over the other stop's sign, or over your own marker. */
+function placeLabels(ctx, labels, obstacles = []) {
+  ctx.font = LABEL_FONT;
+  const overlaps = (b, list) => list.some(q => b.x0 < q.x1 && b.x1 > q.x0 && b.y0 < q.y1 && b.y1 > q.y0);
+  const signs = [...labels.map(([x, y]) => ({ x0: x - 13, y0: y - 13, x1: x + 13, y1: y + 13 })), ...obstacles];
+  const placed = [];
+  for (const [x, y, txt] of labels) {
+    const w = ctx.measureText(txt).width + 14, h = 22;
+    const boxes = [];
+    for (const dy of [0, -26, 26, -52, 52]) {
+      for (const x0 of [x + 17, x - 17 - w]) boxes.push({ x0, y0: y + dy - h / 2, x1: x0 + w, y1: y + dy + h / 2 });
+    }
+    const onScreen = boxes.filter(b => b.x0 >= 8 && b.x1 <= view.W - 8);
+    const box = onScreen.find(b => !overlaps(b, placed.map(p => p.box)) && !overlaps(b, signs)) || onScreen[0] || boxes[0];
+    placed.push({ box, txt });
+  }
+  return placed;
 }
 
-function drawLabel(ctx, x, y, txt, night) {
-  const b = labelBox(ctx, x, y, txt);
-  const lx = b.x0, h = b.y1 - b.y0, w = b.x1 - b.x0;
+/* A small white tag beside a map symbol. */
+function drawLabel(ctx, b, txt, night) {
+  ctx.font = LABEL_FONT;
+  const lx = b.x0, h = b.y1 - b.y0, w = b.x1 - b.x0, y = (b.y0 + b.y1) / 2;
   roundedRect(ctx, lx, y - h / 2, w, h, 11);
   ctx.fillStyle = night ? '#303134' : '#ffffff';
   ctx.shadowColor = 'rgba(60,64,67,.35)';
