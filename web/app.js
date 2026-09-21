@@ -1152,11 +1152,6 @@ async function addressName(lat, lon) {
 }
 
 /* Called by the map: the pin was dragged, or a point was held down. */
-async function onPinMoved(lat, lon) {
-  await loadStopsAround(lat, lon);
-  setPlace(lat, lon, nearbyName(lat, lon), 'manual', { recenter: false, address: true });
-}
-
 function useGps(quiet) {
   if (!navigator.geolocation) { if (!quiet) placeNotice('Este navegador não informa a localização.'); return; }
   navigator.geolocation.getCurrentPosition(
@@ -1212,11 +1207,7 @@ async function renderPlacePanel(warning) {
   if (!q) {
     list.append(
       placeRow('crosshair', 'gps', 'Usar minha localização', 'Pelo GPS do aparelho', () => useGps(false), state.place.mode === 'gps'),
-      placeRow('pin', 'map', 'Escolher no mapa', 'Ou arraste o alfinete, ou segure o dedo num ponto do mapa', startPick, false));
-    if (state.place.mode === 'manual') {
-      list.append(placeRow('pin', '', state.place.name, 'Local escolhido por você',
-        () => { closePlacePanel(); view.center = [...state.here]; render(); }, true));
-    }
+      placeRow('pin', 'map', 'Escolher no mapa', 'Mova o mapa até o ponto certo', startPick, false));
     return;
   }
   loadPlaceNames();

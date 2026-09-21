@@ -523,38 +523,11 @@ function resize() {
 function wireMap() {
   const cv = cvs();
   addEventListener('resize', () => { resize(); renderCallout(); });
+  // Dragging pans the map and a tap picks what is under it. Your place only
+  // changes through "Escolher no mapa", where the map moves under a fixed pin.
   let arr = null;
-  // Your pin can be dragged, and holding a finger on the map puts you there.
-  const PIN = 1.25;
-  function onPin(px, py) {
-    if (!state.hasPlace || state.pickingPlace) return false;
-    const [x, y] = toScreen(state.here[0], state.here[1]);
-    const cy = state.place.mode === 'manual' ? y - 22 * PIN : y;
-    return Math.hypot(px - x, py - cy) < 26;
-  }
-  function mapPoint(px, py) {
-    const [ox, oy] = origin();
-    return unproject(ox + px, oy + py, view.z);
-  }
   cv.addEventListener('pointerdown', e => {
-    const r = cv.getBoundingClientRect();
-    const px = e.clientX - r.left, py = e.clientY - r.top;
-    arr = { x: e.clientX, y: e.clientY, mov: 0, pin: onPin(px, py), longPressed: false };
-    if (arr.pin) {
-      // Keep the pin's point where it was relative to the finger.
-      const [x, y] = toScreen(state.here[0], state.here[1]);
-      arr.dx = x - px;
-      arr.dy = y - py;
-      state.place.mode = 'manual';
-    } else if (!state.pickingPlace) {
-      arr.timer = setTimeout(() => {
-        if (!arr || arr.mov > 8) return;
-        arr.longPressed = true;
-        if (navigator.vibrate) navigator.vibrate(15);
-        const [la, lo] = mapPoint(px, py);
-        onPinMoved(la, lo);
-      }, 550);
-    }
+    arr = { x: e.clientX, y: e.clientY, mov: 0 };
     cv.setPointerCapture(e.pointerId);
   });
   cv.addEventListener('pointermove', e => {
@@ -562,13 +535,6 @@ function wireMap() {
     const dx = e.clientX - arr.x, dy = e.clientY - arr.y;
     arr.mov += Math.abs(dx) + Math.abs(dy);
     arr.x = e.clientX; arr.y = e.clientY;
-    if (arr.pin) {
-      const r = cv.getBoundingClientRect();
-      state.here = mapPoint(e.clientX - r.left + arr.dx, e.clientY - r.top + arr.dy);
-      request();
-      return;
-    }
-    if (arr.mov > 8 && arr.timer) { clearTimeout(arr.timer); arr.timer = null; }
     const [cx, cy] = proj(view.center[0], view.center[1], view.z);
     view.center = unproject(cx - dx, cy - dy, view.z);
     request();
@@ -576,13 +542,7 @@ function wireMap() {
   cv.addEventListener('pointerup', e => {
     const a = arr;
     arr = null;
-    if (!a) return;
-    if (a.timer) clearTimeout(a.timer);
-    if (a.pin) {
-      if (a.mov > 4) onPinMoved(state.here[0], state.here[1]);
-      return;
-    }
-    if (a.longPressed || a.mov >= 6) return;
+    if (!a || a.mov >= 6) return;
     const r = cv.getBoundingClientRect();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     if (state.pickingPlace) {
@@ -602,7 +562,7 @@ function wireMap() {
     }
     onMapTap(best);
   });
-  cv.addEventListener('pointercancel', () => { if (arr && arr.timer) clearTimeout(arr.timer); arr = null; });
+  cv.addEventListener('pointercancel', () => { arr = null; });
   cv.addEventListener('wheel', e => {
     e.preventDefault();
     view.z = Math.max(11, Math.min(18, view.z + (e.deltaY < 0 ? 1 : -1)));
