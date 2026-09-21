@@ -1261,8 +1261,16 @@ async function searchAddress(text) {
       list.append(el('p', 'place-notice', `Nenhum endereço encontrado para "${text}" no Rio.`));
       return;
     }
+    // When the map has no such house number, the result is the street: say
+    // so, since the pin will land somewhere along it, not at the door. A house
+    // number comes first or last ("304 Bornéo", "Bornéo, 304"); a number
+    // followed by "de" is part of the name ("7 de Setembro").
+    const m = text.match(/^\s*(\d{1,5})\s+(?!de\b)/i) || text.match(/[\s,]+(\d{1,5})\s*$/);
+    const number = m && m[1];
     for (const l of foundPlaces) {
-      list.append(placeRow('pin', '', l.name, l.area || 'Endereço',
+      const noNumber = number && !new RegExp(`\\b${number}\\b`).test(l.name);
+      const sub = [l.area || 'Endereço', noNumber ? `número ${number} não encontrado` : ''].filter(Boolean).join(' · ');
+      list.append(placeRow('pin', '', l.name, sub,
         () => { closePlacePanel(); setPlace(l.lat, l.lon, l.name, 'manual'); }, false));
     }
   } catch {

@@ -65,6 +65,25 @@ pub fn to_place(r: &serde_json::Value) -> Option<Place> {
     Some(Place { lat, lon, name, area })
 }
 
+/// OpenStreetMap stores a street as many short segments, and Nominatim
+/// returns each one: "Rua Bornéo" came back three times, 350 m apart. A result
+/// with the same name as one already kept and within 600 m of it is another
+/// piece of the same street. A long avenue still appears once per stretch.
+fn one_per_street(places: Vec<Place>) -> Vec<Place> {
+    let mut kept: Vec<Place> = Vec::new();
+    for p in places {
+        let same = kept.iter().any(|k| {
+            let dy = (k.lat - p.lat) * 111_320.0;
+            let dx = (k.lon - p.lon) * 111_320.0 * k.lat.to_radians().cos();
+            k.name.to_lowercase() == p.name.to_lowercase() && dx.hypot(dy) < 600.0
+        });
+        if !same {
+            kept.push(p);
+        }
+    }
+    kept
+}
+
 impl Geocoder {
     pub fn new(http: reqwest::Client) -> Geocoder {
         Geocoder {
@@ -124,7 +143,8 @@ impl Geocoder {
                 urlencode(&format!("{q}, Rio de Janeiro"))
             );
             let v = self.request(&url).await?;
-            Ok(v.as_array().map(|a| a.iter().filter_map(to_place).collect()).unwrap_or_default())
+            let places: Vec<Place> = v.as_array().map(|a| a.iter().filter_map(to_place).collect()).unwrap_or_default();
+            Ok(one_per_street(places))
         })
         .await
     }
@@ -196,6 +216,24 @@ mod tests {
             "address": {"road": "Rua do Catete", "suburb": "Catete"}
         });
         assert_eq!(to_place(&r).unwrap().name, "Rua do Catete");
+    }
+
+    #[test]
+    fn segments_of_one_street_come_back_once() {
+        let p = |lat: f64, lon: f64, name: &str, area: &str| Place { lat, lon, name: name.into(), area: area.into() };
+        let got = one_per_street(vec![
+            p(-22.879024, -43.3300986, "Rua Bornéo", "Cascadura"),
+            p(-22.8789683, -43.3280275, "Rua Bornéo", "Cascadura"),
+            p(-22.8791045, -43.3314571, "Rua Bornéo", "Madureira"),
+            p(-22.8791045, -43.3314571, "Rua Bornéo, 304", "Madureira"),
+            p(-22.8200000, -43.2500000, "Avenida Brasil", "Penha"),
+            p(-22.8700000, -43.4500000, "Avenida Brasil", "Realengo"),
+        ]);
+        let names: Vec<(&str, &str)> = got.iter().map(|p| (p.name.as_str(), p.area.as_str())).collect();
+        assert_eq!(
+            names,
+            [("Rua Bornéo", "Cascadura"), ("Rua Bornéo, 304", "Madureira"), ("Avenida Brasil", "Penha"), ("Avenida Brasil", "Realengo")]
+        );
     }
 
     #[test]
