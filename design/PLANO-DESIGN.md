@@ -263,3 +263,7 @@ A paleta do onibus-rj, sorteada pela posição da linha no trilho, saiu: o Brian
 - **Selos** (trilho, listas, balão) usam a cor e a cor de texto oficiais, sem ajuste. As 10 linhas sem cor no GTFS e as linhas sem rota usam `#546E7A`.
 - **Mapa** (rota, paradas e ônibus): a mesma cor, só mais escura (tema claro) ou mais clara (tema escuro) até ter contraste de 3:1 com o fundo. O cinza oficial sumiria entre as ruas do mapa claro, e o azul-marinho no escuro. No menu do selo, a cor como texto vai até 4,5:1.
 - **Mesma cor, linhas diferentes**: linhas da mesma região têm a mesma cor. Quando duas linhas no mapa têm, cada ônibus delas leva o número ao lado, fora das etiquetas das paradas, como nos apps de cidades em que todo ônibus é da mesma cor.
+
+## Revisão 4.11: o app é azul
+
+A pedido do Brian, o verde do Lá vem deixou de ser a cor do app. A cor da marca é o azul `#1A73E8`, o mesmo do ponto do GPS: botão de pesquisa, ícone de local na barra, alfinete do local escolhido no mapa (antes vermelho), interruptores dos ajustes, botão "Estou aqui" e contorno de foco. O verde ficou só onde quer dizer "ao vivo" (a bolinha de "Tempo real", o sinal ao lado do tempo, "chegando"); o vermelho, só no × que remove todas as linhas e em "Remover linha". A aba se chama "Busones" e o ícone é um ônibus azul.

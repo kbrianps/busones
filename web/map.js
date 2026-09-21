@@ -34,6 +34,9 @@ function toScreen(lat, lon) {
  * turned into Path2D objects once, in tile coordinates, and redrawn with a
  * transform, so panning costs a few fills per tile. */
 const BASE = '/dist/base';
+/* You on the map, in the app's blue: a dot from GPS, a pin you placed. */
+const HERE_COLOR = '#1a73e8';
+
 const BASE_COLORS = {
   light: { land: '#f4f4f1', water: '#c9e3f0', green: '#dcebd3', sand: '#f3ecd8',
            road: '#ffffff', roadCasing: '#e1e2e4', motorway: '#fbe7ad', motorwayCasing: '#ead08b',
@@ -324,21 +327,21 @@ function drawMap() {
   // Stop labels last, so an arriving bus never hides what the stop is.
   for (const [x, y, t] of labels) drawLabel(ctx, x, y, t, night);
 
-  // You: the blue dot when it comes from GPS, a red pin when you chose it.
+  // You: a blue dot when it comes from GPS, a blue pin when you chose it.
   if (state.hasPlace && !state.pickingPlace) {
     const [x, y] = toScreen(state.here[0], state.here[1]);
     if (state.place.mode === 'manual') {
-      teardrop(ctx, x, y, '#dc2626', null, 1.25);
+      teardrop(ctx, x, y, HERE_COLOR, null, 1.25);
     } else {
       ctx.beginPath(); ctx.arc(x, y, 16, 0, 7);
       ctx.fillStyle = 'rgba(26,115,232,.16)'; ctx.fill();
       ctx.beginPath(); ctx.arc(x, y, 8, 0, 7);
-      ctx.fillStyle = '#1a73e8'; ctx.fill();
+      ctx.fillStyle = HERE_COLOR; ctx.fill();
       ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
     }
   }
   // Choosing a place: a fixed pin in the middle, the map moves under it.
-  if (state.pickingPlace) teardrop(ctx, view.W / 2, view.H / 2, '#dc2626', null, 1.35);
+  if (state.pickingPlace) teardrop(ctx, view.W / 2, view.H / 2, HERE_COLOR, null, 1.35);
 }
 
 /* A small white tag beside a map symbol, flipped to the left near the edge. */

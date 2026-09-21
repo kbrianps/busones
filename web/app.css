@@ -5,7 +5,8 @@
    Google-style neutrals, navy line badges, green for "live". */
 
 :root {
-  --green: #2e7d32;
+  /* The app's own colour: search, your location, switches, the main button. */
+  --brand: #1a73e8;
   --green-live: #1e8e3e;
   --navy: #303f9f;
   --bg: #ffffff;
@@ -45,7 +46,7 @@ body {
 }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 svg { width: 24px; height: 24px; fill: currentColor; display: block; }
-:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }
+:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
 
 #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 #attribution { position: absolute; left: 4px; bottom: 2px; font-size: 10px; color: #5f6368;
@@ -69,11 +70,11 @@ svg { width: 24px; height: 24px; fill: currentColor; display: block; }
   border-radius: 18px; color: var(--text-2); font-size: 13px; flex: none;
 }
 #where:active { background: var(--bg-2); }
-#where svg { width: 16px; height: 16px; flex: none; color: #dc2626; }
+#where svg { width: 16px; height: 16px; flex: none; color: var(--brand); }
 #where span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.searching #where { display: none; }
 #search-btn {
-  width: 40px; height: 40px; border-radius: 50%; background: var(--green); color: #fff;
+  width: 40px; height: 40px; border-radius: 50%; background: var(--brand); color: #fff;
   display: grid; place-items: center; flex: none;
 }
 #search-btn svg { width: 22px; height: 22px; }
@@ -286,7 +287,7 @@ body.sheet-open #rail, body.place-open #rail { display: none; }
 }
 .place-row-icon svg { width: 20px; height: 20px; }
 .place-row-icon.gps { background: #e8f0fe; color: #1a73e8; }
-.place-row-icon.map { background: #fce8e6; color: #dc2626; }
+.place-row-icon.map { background: rgba(26, 115, 232, .14); color: var(--brand); }
 .place-row-icon.stop { background: var(--navy); color: #fff; border-radius: 9px; }
 .place-row-text { flex: 1; min-width: 0; }
 .place-row-text b { display: block; font-weight: 500; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -301,7 +302,7 @@ body.sheet-open #rail, body.place-open #rail { display: none; }
 #pick-bar p { margin: 0 0 10px; font-size: 15px; font-weight: 500; text-align: center; }
 .pick-buttons { display: flex; gap: 10px; }
 .pick-buttons button { flex: 1; height: 44px; border-radius: 22px; font-weight: 500; font-size: 15px; background: var(--bg-2); }
-.pick-buttons .primary { background: var(--green); color: #fff; }
+.pick-buttons .primary { background: var(--brand); color: #fff; }
 body.picking #top, body.picking #rail, body.picking #fabs,
 body.picking #gear { display: none; }
 
@@ -318,7 +319,7 @@ body.picking #gear { display: none; }
 .setting-text small { display: block; font-size: 13px; color: var(--text-2); margin-top: 2px; }
 .toggle { width: 40px; height: 22px; border-radius: 11px; background: var(--border); position: relative; flex: none; transition: background .15s; }
 .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: var(--shadow-soft); transition: left .15s; }
-.setting[aria-checked="true"] .toggle { background: var(--green); }
+.setting[aria-checked="true"] .toggle { background: var(--brand); }
 .setting[aria-checked="true"] .toggle::after { left: 20px; }
 
 @media (min-width: 760px) {
