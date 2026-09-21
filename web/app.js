@@ -1158,7 +1158,7 @@ function useGps(quiet) {
     p => { closePlacePanel(); setPlace(p.coords.latitude, p.coords.longitude, 'Minha localização', 'gps'); },
     () => {
       if (quiet && !state.hasPlace) openPlacePanel('Não conseguimos sua localização. Escolha onde você está.');
-      else if (!quiet) placeNotice('Não foi possível usar o GPS. Escolha no mapa ou busque um bairro ou parada.');
+      else if (!quiet) placeNotice('Não foi possível usar o GPS. Busque um endereço ou local, ou escolha no mapa.');
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
 }
