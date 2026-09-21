@@ -1,0 +1,51 @@
+# Serves the snapshots busones writes to tmpfs, behind a Cloudflare tunnel.
+#
+# Two rules exist for the edge, not for the browser:
+#   * the TTL comes from here, because a Cloudflare Free zone can only be told
+#     to respect the origin's Cache-Control, not to override it below 2 hours;
+#   * a missing snapshot answers 503, never 404. Cloudflare treats a 404 as a
+#     valid response that replaces the stale copy and caches it for minutes,
+#     while stale-if-error only fires on 5xx.
+
+:8080 {
+	root * /run/busones
+
+	handle /api/v1/status.json {
+		reverse_proxy 127.0.0.1:8081
+	}
+
+	# Address search and reverse geocoding, cached by busones itself.
+	handle /api/v1/geocode* {
+		reverse_proxy 127.0.0.1:8081
+	}
+	handle /api/v1/reverse* {
+		reverse_proxy 127.0.0.1:8081
+	}
+
+	handle /api/* {
+		header Cache-Control "public, max-age=10, stale-while-revalidate=10, stale-if-error=600"
+		header -Server
+		file_server {
+			precompressed gzip
+		}
+	}
+
+	handle {
+		respond "busones" 200
+	}
+
+	handle_errors {
+		header -Cache-Control
+		header Cache-Control "no-store"
+		@gone expression {err.status_code} == 404
+		handle @gone {
+			respond "snapshot not published yet" 503
+		}
+		respond "{err.status_text}" {err.status_code}
+	}
+
+	log {
+		output file /var/log/caddy/busones.log
+		format json
+	}
+}

@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>busones dev viewer</title>
+<style>
+  :root {
+    --bg: #f8fafc; --panel: #ffffff; --ink: #0f172a; --muted: #64748b;
+    --line: #e2e8f0; --accent: #0ea5e9; --warn: #f59e0b; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f172a; --panel: #1e293b; --ink: #e2e8f0; --muted: #94a3b8; --line: #334155; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #map.dragging { cursor: grabbing; }
+  .panel {
+    position: absolute; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.14);
+  }
+  #controls { top: 12px; left: 12px; padding: 10px 12px; width: 286px; max-width: calc(100vw - 24px); }
+  #controls h1 { margin: 0 0 8px; font-size: 15px; letter-spacing: .02em; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  select, input[type=search], button {
+    font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px;
+  }
+  select, input[type=search] { flex: 1; min-width: 0; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  label.chk { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  #stats { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  #stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  #zoom { top: 12px; right: 12px; display: flex; flex-direction: column; overflow: hidden; }
+  #zoom button { border: 0; border-radius: 0; width: 38px; height: 38px; font-size: 19px; background: var(--panel); }
+  #zoom button + button { border-top: 1px solid var(--line); }
+  #pick { bottom: 12px; left: 12px; padding: 10px 12px; max-width: 320px; display: none; font-size: 12px; }
+  #pick pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; color: var(--muted); }
+  #attr {
+    position: absolute; bottom: 0; right: 0; font-size: 10px; padding: 2px 6px;
+    background: rgba(255,255,255,.75); color: #334155;
+  }
+  #attr a { color: inherit; }
+  .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+
+<div id="controls" class="panel">
+  <h1>busones <span style="color:var(--muted);font-weight:400">dev viewer</span></h1>
+  <div class="row">
+    <select id="line"><option value="">All lines in view</option></select>
+    <button id="fit" title="Fit the selected line">Fit</button>
+  </div>
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="showPending" checked> pending</label>
+    <label class="chk"><input type="checkbox" id="showParked"> parked</label>
+    <label class="chk"><input type="checkbox" id="showStale"> stale</label>
+  </div>
+  <div class="legend">
+    <span><i style="background:#0ea5e9"></i>live</span>
+    <span><i style="background:#f59e0b"></i>layover</span>
+    <span><i style="background:#94a3b8"></i>pending</span>
+    <span><i style="background:#475569"></i>parked</span>
+    <span><i style="background:#cbd5e1"></i>stale</span>
+    <span><i style="background:#dc2626"></i>off route</span>
+  </div>
+  <div id="stats">loading…</div>
+</div>
+
+<div id="zoom" class="panel">
+  <button id="zin" aria-label="Zoom in">+</button>
+  <button id="zout" aria-label="Zoom out">&minus;</button>
+</div>
+
+<div id="pick" class="panel"></div>
+<div id="attr">&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</div>
+
+<script>
+const API = '/run/api/v1';
+const STATIC = '/dist';
+const TILE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const PHASE_COLOR = {
+  live: '#0ea5e9', layover: '#f59e0b', pending: '#94a3b8',
+  parked: '#475569', stale: '#cbd5e1', offroute: '#dc2626',
+};
+
+const cv = document.getElementById('map');
+const ctx = cv.getContext('2d', { alpha: false });
+
+// Every redraw request lands on the next animation frame. Without this a
+// viewport full of loading tiles triggers one full repaint per tile, and a
+// drag repaints once per pointer event.
+let frameQueued = false;
+function scheduleDraw() {
+  if (frameQueued) return;
+  frameQueued = true;
+  requestAnimationFrame(() => { frameQueued = false; draw(); });
+}
+let view = { lat: -22.9083, lon: -43.1964, z: 12 };
+let dpr = 1, W = 0, H = 0;
+
+/* ---------- Web Mercator ---------- */
+const worldSize = z => 256 * Math.pow(2, z);
+function project(lat, lon, z) {
+  const s = worldSize(z);
+  const x = (lon + 180) / 360 * s;
+  const sin = Math.sin(lat * Math.PI / 180);
+  const y = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * s;
+  return [x, y];
+}
+function unproject(x, y, z) {
+  const s = worldSize(z);
+  const lon = x / s * 360 - 180;
+  const n = Math.PI - 2 * Math.PI * y / s;
+  const lat = 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  return [lat, lon];
+}
+const origin = () => {
+  const [cx, cy] = project(view.lat, view.lon, view.z);
+  return [cx - W / 2, cy - H / 2];
+};
+function toScreen(lat, lon) {
+  const [ox, oy] = origin();
+  const [x, y] = project(lat, lon, view.z);
+  return [x - ox, y - oy];
+}
+
+/* ---------- tiles ---------- */
+const tiles = new Map();
+let usedTiles = new Set();
+function tileImage(z, x, y) {
+  const key = z + '/' + x + '/' + y;
+  usedTiles.add(key);
+  let img = tiles.get(key);
+  if (img) return img;
+  img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = scheduleDraw;
+  img.onerror = () => { img.failed = true; };
+  img.src = TILE.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+  tiles.set(key, img);
+  if (tiles.size > 320) {
+    for (const k of tiles.keys()) {
+      if (!usedTiles.has(k)) { tiles.delete(k); break; }
+    }
+  }
+  return img;
+}
+function drawTiles() {
+  usedTiles = new Set();
+  const z = Math.round(view.z), n = Math.pow(2, z);
+  const [ox, oy] = origin();
+  const scale = Math.pow(2, view.z - z) * 256;
+  const x0 = Math.floor(ox / scale), x1 = Math.floor((ox + W) / scale);
+  const y0 = Math.floor(oy / scale), y1 = Math.floor((oy + H) / scale);
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      if (y < 0 || y >= n) continue;
+      const img = tileImage(z, ((x % n) + n) % n, y);
+      if (!img.complete || img.failed) continue;
+      ctx.drawImage(img, Math.round(x * scale - ox), Math.round(y * scale - oy),
+                    Math.ceil(scale), Math.ceil(scale));
+    }
+  }
+}
+
+/* ---------- polyline ---------- */
+function decodePolyline(str, precision = 5) {
+  const factor = Math.pow(10, precision);
+  const out = [];
+  let i = 0, lat = 0, lon = 0;
+  while (i < str.length) {
+    let result = 0, shift = 0, b;
+    do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    result = 0; shift = 0;
+    do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lon += (result & 1) ? ~(result >> 1) : (result >> 1);
+    out.push([lat / factor, lon / factor]);
+  }
+  return out;
+}
+
+/* ---------- data ---------- */
+let index = null, buses = [], bundle = null, fetchedAt = 0, lastError = '';
+const bundleCache = new Map();
+
+async function getJSON(url) {
+  const r = await fetch(url, { cache: 'no-cache' });
+  if (!r.ok) throw new Error(url + ' -> ' + r.status);
+  return r.json();
+}
+
+function viewportCells(z) {
+  const [ox, oy] = origin();
+  const s = Math.pow(2, view.z - z) * 256;
+  const out = [];
+  for (let x = Math.floor(ox / s); x <= Math.floor((ox + W) / s); x++)
+    for (let y = Math.floor(oy / s); y <= Math.floor((oy + H) / s); y++)
+      if (x >= 0 && y >= 0) out.push([x, y]);
+  return out.slice(0, 24);
+}
+
+async function refresh() {
+  try {
+    index = await getJSON(API + '/index.json');
+    const line = document.getElementById('line').value;
+    if (line) {
+      buses = await getJSON(API + '/lines/' + encodeURIComponent(line) + '.json');
+      buses.forEach(b => b.line = line);
+      if (!bundleCache.has(line)) {
+        bundleCache.set(line, await getJSON(STATIC + '/lines/' + encodeURIComponent(line) + '.json')
+          .then(b => ({ dirs: b.dirs.map(d => ({ ...d, pts: decodePolyline(d.poly) })) }))
+          .catch(() => null));
+      }
+      bundle = bundleCache.get(line);
+    } else if (view.z < 14) {
+      // Zoomed out the viewport spans dozens of tiles, so one fleet file is
+      // both faster and smaller than the tile snapshots it replaces.
+      buses = await getJSON(API + '/fleet.json');
+      bundle = null;
+    } else {
+      const z = index.cells.z;
+      const cells = viewportCells(z);
+      const parts = await Promise.all(cells.map(([x, y]) =>
+        getJSON(`${API}/cells/${z}/${x}/${y}/vehicles.json`).catch(() => [])));
+      buses = parts.flat();
+      bundle = null;
+    }
+    fetchedAt = Date.now();
+    lastError = '';
+    fillLines();
+  } catch (e) {
+    lastError = String(e.message || e);
+  }
+  scheduleDraw();
+  status();
+}
+
+function fillLines() {
+  const sel = document.getElementById('line');
+  if (!index || sel.dataset.filled === String(index.lines.length)) return;
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">All lines in view</option>' +
+    index.lines.map(([name, n]) => `<option value="${name}">${name} (${n})</option>`).join('');
+  sel.value = keep;
+  sel.dataset.filled = String(index.lines.length);
+}
+
+/* ---------- rendering ---------- */
+function visible(b) {
+  if (b.ph === 'parked' && !document.getElementById('showParked').checked) return false;
+  if (b.ph === 'stale' && !document.getElementById('showStale').checked) return false;
+  if (b.ph === 'pending' && !document.getElementById('showPending').checked) return false;
+  return true;
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = getComputedStyle(document.body).backgroundColor || '#f8fafc';
+  ctx.fillRect(0, 0, W, H);
+  drawTiles();
+
+  if (bundle) {
+    bundle.dirs.forEach((d, i) => {
+      ctx.strokeStyle = i === 0 ? 'rgba(139,92,246,.75)' : 'rgba(16,185,129,.75)';
+      ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.beginPath();
+      d.pts.forEach(([la, lo], k) => {
+        const [x, y] = toScreen(la, lo);
+        k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.stroke();
+      if (view.z >= 14) {
+        ctx.fillStyle = 'rgba(255,255,255,.95)';
+        ctx.strokeStyle = 'rgba(71,85,105,.9)';
+        ctx.lineWidth = 1.5;
+        d.stops.forEach(s => {
+          const [x, y] = toScreen(s[1], s[2]);
+          if (x < -10 || y < -10 || x > W + 10 || y > H + 10) return;
+          ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 7); ctx.fill(); ctx.stroke();
+        });
+      }
+    });
+  }
+
+  const now = Date.now() / 1000;
+  for (const b of buses) {
+    if (!visible(b)) continue;
+    const [x, y] = toScreen(b.lat, b.lon);
+    if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
+    const color = PHASE_COLOR[b.ph] || '#94a3b8';
+    const age = now - b.t;
+    ctx.globalAlpha = age > 120 ? 0.45 : 1;
+    ctx.save();
+    ctx.translate(x, y);
+    if (b.brg != null) {
+      ctx.rotate(b.brg * Math.PI / 180);
+      ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(6.2, 7); ctx.lineTo(0, 4); ctx.lineTo(-6.2, 7);
+      ctx.closePath();
+    } else {
+      ctx.beginPath(); ctx.arc(0, 0, 5.5, 0, 7);
+    }
+    ctx.fillStyle = color;
+    ctx.strokeStyle = 'rgba(255,255,255,.9)';
+    ctx.lineWidth = 1.4;
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    if (view.z >= 15 && b.line) {
+      ctx.font = '600 11px system-ui'; ctx.textAlign = 'center';
+      ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3;
+      ctx.strokeText(b.line, x, y - 13); ctx.fillStyle = '#0f172a';
+      ctx.fillText(b.line, x, y - 13);
+    }
+  }
+}
+
+function status() {
+  const el = document.getElementById('stats');
+  if (lastError) {
+    el.innerHTML = `<span class="bad">${lastError}</span><br>Is <code>busones serve</code> running?`;
+    return;
+  }
+  if (!index) { el.textContent = 'loading…'; return; }
+  const c = index.counts, now = Date.now() / 1000;
+  const shown = buses.filter(visible);
+  const ages = shown.map(b => now - b.t).sort((a, b) => a - b);
+  const p = q => ages.length ? Math.round(ages[Math.floor(ages.length * q)]) : 0;
+  const src = Object.entries(index.sources || {})
+    .map(([k, v]) => `${k}:${v.state}`).join(' ');
+  el.innerHTML = `
+    fleet <b>${c.tracked}</b> tracked, <b>${c.matched}</b> with a direction
+    (<b>${c.direction_rate_pct}%</b> of ${c.in_service} in service)<br>
+    here <b>${shown.length}</b> shown, age p50 <b>${p(.5)}s</b> p90 <b>${p(.9)}s</b><br>
+    snapshot <b>${Math.max(0, Math.round(now - index.generated_at))}s</b> old ·
+    feed ${src}${index.warming ? ' · <b>warming</b>' : ''}`;
+}
+
+/* ---------- interaction ---------- */
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+let drag = null;
+cv.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY, moved: 0 };
+  cv.setPointerCapture(e.pointerId); cv.classList.add('dragging');
+});
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.moved += Math.abs(dx) + Math.abs(dy);
+  drag.x = e.clientX; drag.y = e.clientY;
+  const [cx, cy] = project(view.lat, view.lon, view.z);
+  [view.lat, view.lon] = unproject(cx - dx, cy - dy, view.z);
+  scheduleDraw();
+});
+cv.addEventListener('pointerup', e => {
+  const wasClick = drag && drag.moved < 5;
+  const panned = drag && drag.moved >= 5;
+  drag = null; cv.classList.remove('dragging');
+  if (wasClick) pick(e);
+  else if (panned && view.z >= 14 && !document.getElementById('line').value) scheduleRefresh(500);
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomBy(e.deltaY < 0 ? 1 : -1);
+}, { passive: false });
+
+let refreshTimer = null;
+function scheduleRefresh(delay = 350) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refresh, delay);
+}
+
+function zoomBy(d) {
+  view.z = Math.max(10, Math.min(18, view.z + d));
+  scheduleDraw();
+  if (!document.getElementById('line').value) scheduleRefresh();
+}
+document.getElementById('zin').onclick = () => zoomBy(1);
+document.getElementById('zout').onclick = () => zoomBy(-1);
+
+function pick(e) {
+  const r = cv.getBoundingClientRect();
+  const px = e.clientX - r.left, py = e.clientY - r.top;
+  let best = null, bestD = 16;
+  for (const b of buses) {
+    if (!visible(b)) continue;
+    const [x, y] = toScreen(b.lat, b.lon);
+    const d = Math.hypot(x - px, y - py);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  const box = document.getElementById('pick');
+  if (!best) { box.style.display = 'none'; return; }
+  const age = Math.round(Date.now() / 1000 - best.t);
+  box.style.display = 'block';
+  box.innerHTML = `<b>${best.line || ''} · ${best.id}</b> — ${best.ph}` +
+    `${best.dir ? ' · ' + best.dir : ''} · GPS ${age}s ago · ${best.ven}` +
+    `<pre>${JSON.stringify(best, null, 1)}</pre>`;
+}
+
+document.getElementById('line').onchange = () => { bundle = null; refresh(); };
+['showPending', 'showParked', 'showStale'].forEach(id =>
+  document.getElementById(id).onchange = () => { scheduleDraw(); status(); });
+document.getElementById('fit').onclick = () => {
+  const pts = bundle ? bundle.dirs.flatMap(d => d.pts) : buses.map(b => [b.lat, b.lon]);
+  if (!pts.length) return;
+  const la = pts.map(p => p[0]), lo = pts.map(p => p[1]);
+  view.lat = (Math.min(...la) + Math.max(...la)) / 2;
+  view.lon = (Math.min(...lo) + Math.max(...lo)) / 2;
+  const span = Math.max(Math.max(...la) - Math.min(...la), (Math.max(...lo) - Math.min(...lo)) / 2);
+  view.z = Math.max(10, Math.min(16, Math.floor(Math.log2(180 / Math.max(span, 0.004)))));
+  scheduleDraw(); status();
+};
+
+// Deep link: ?line=474&z=14&at=-22.90,-43.19
+const qs = new URLSearchParams(location.search);
+if (qs.get('z')) view.z = Math.max(10, Math.min(18, +qs.get('z')));
+if (qs.get('at')) {
+  const [la, lo] = qs.get('at').split(',').map(Number);
+  if (isFinite(la) && isFinite(lo)) { view.lat = la; view.lon = lo; }
+}
+if (qs.get('line')) {
+  const sel = document.getElementById('line');
+  sel.innerHTML = `<option value="${qs.get('line')}">${qs.get('line')}</option>`;
+  sel.value = qs.get('line');
+  sel.dataset.filled = '';
+}
+
+resize();
+refresh();
+setInterval(refresh, 10000);
+setInterval(() => { scheduleDraw(); status(); }, 1000);
+</script>
+</body>
+</html>

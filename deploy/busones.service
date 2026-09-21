@@ -1,0 +1,62 @@
+# /etc/systemd/system/busones.service
+[Unit]
+Description=busones bus tracking backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/busones serve
+Restart=always
+RestartSec=2
+
+Environment=BUSONES_RUNTIME_DIR=/run/busones
+Environment=BUSONES_STATE_DIR=/var/lib/busones
+Environment=BUSONES_GTFS=/var/lib/busones/gtfs.json.gz
+Environment=BUSONES_ALIASES=/var/lib/busones/service-aliases.json
+Environment=BUSONES_STATUS_ADDR=127.0.0.1:8081
+Environment=BUSONES_LOG=info
+
+# Caddy reads the snapshots from here. RuntimeDirectoryPreserve keeps them
+# across a restart: without it systemd empties /run/busones on every stop and
+# the edge caches the resulting 404s.
+RuntimeDirectory=busones
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=restart
+StateDirectory=busones
+StateDirectoryMode=0750
+
+# Enough headroom for the 24 h fix ring, and a deliberate floor: an Oracle A1
+# instance whose memory, CPU and network all stay under 20% for seven days
+# matches the idle profile, and an instance that gets stopped needs A1 capacity
+# to come back, which took days to obtain in sa-saopaulo-1.
+MemoryMax=3G
+CPUQuota=150%
+TasksMax=64
+Nice=5
+
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

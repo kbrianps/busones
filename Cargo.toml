@@ -1,0 +1,28 @@
+[package]
+name = "busones"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Real-time bus tracking backend for the city of Rio de Janeiro"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/kbrianps/busones"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+flate2 = "1"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "charset", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
