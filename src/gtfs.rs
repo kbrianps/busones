@@ -154,9 +154,32 @@ pub struct Stop {
     pub y: f32,
 }
 
+/// Which service runs on a date: 0 weekday, 1 Saturday, 2 Sunday, or none.
+///
+/// Holidays come from `calendar_dates.txt`: the SMTR adds the Sunday service
+/// and removes the weekday one, so a holiday runs the Sunday frequencies.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DayTypes {
+    /// For each weekday, Sunday first as in JavaScript's `getDay()`.
+    pub weekdays: [Option<u8>; 7],
+    /// Dates (`YYYYMMDD`) whose day type differs from their weekday's.
+    pub exceptions: BTreeMap<String, Option<u8>>,
+}
+
+impl Default for DayTypes {
+    fn default() -> Self {
+        DayTypes {
+            weekdays: [Some(2), Some(0), Some(0), Some(0), Some(0), Some(0), Some(1)],
+            exceptions: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct Gtfs {
     pub feed_version: String,
+    #[serde(default)]
+    pub days: DayTypes,
     pub routes: Vec<Route>,
     pub shapes: Vec<Shape>,
     pub stops: Vec<Stop>,
@@ -326,13 +349,14 @@ impl Gtfs {
     pub fn summary(&self) -> String {
         let stops_linked: usize = self.shapes.iter().map(|s| s.stops.len()).sum();
         format!(
-            "{} routes, {} shapes ({} points), {} stops, {} trips, {} shape-stop links",
+            "{} routes, {} shapes ({} points), {} stops, {} trips, {} shape-stop links, {} calendar exceptions",
             self.routes.len(),
             self.shapes.len(),
             self.shapes.iter().map(|s| s.lat.len()).sum::<usize>(),
             self.stops.len(),
             self.trip_shape.len(),
-            stops_linked
+            stops_linked,
+            self.days.exceptions.len()
         )
     }
 }
@@ -344,6 +368,93 @@ fn service_code(service_id: &str) -> Option<u16> {
         "D_REG" => Some(2),
         _ => None,
     }
+}
+
+/// Reads `calendar.txt` and `calendar_dates.txt` into day types. Both files are
+/// optional: without them every weekday keeps its usual service.
+fn read_calendar(dir: &Path) -> Result<DayTypes> {
+    use crate::timeutil::days_from_civil;
+    let day = |s: &str| -> Option<i64> {
+        if s.len() != 8 {
+            return None;
+        }
+        let n = |a: usize, b: usize| s.get(a..b)?.parse::<i64>().ok();
+        Some(days_from_civil(n(0, 4)?, n(4, 6)?, n(6, 8)?))
+    };
+    // JavaScript weekday (Sunday 0) of a day count; 1970-01-01 was a Thursday.
+    let weekday = |d: i64| (d + 4).rem_euclid(7) as usize;
+
+    let mut out = DayTypes::default();
+    // (service code, runs on [Sunday..Saturday], first day, last day)
+    let mut base: Vec<(u8, [bool; 7], i64, i64)> = Vec::new();
+    if let Ok(r) = open(dir, "calendar.txt") {
+        let mut rd = csv::Reader::new(r)?;
+        let names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+        let cols: Vec<Option<usize>> = names.iter().map(|n| rd.column(n)).collect();
+        let (cid, cs, ce) = (rd.column("service_id"), rd.column("start_date"), rd.column("end_date"));
+        while let Some(rec) = rd.next_record()? {
+            let Some(code) = service_code(csv::get(rec, cid)) else {
+                continue;
+            };
+            let mut runs = [false; 7];
+            for (i, c) in cols.iter().enumerate() {
+                runs[i] = csv::get(rec, *c) == "1";
+            }
+            let from = day(csv::get(rec, cs)).unwrap_or(i64::MIN);
+            let to = day(csv::get(rec, ce)).unwrap_or(i64::MAX);
+            base.push((code as u8, runs, from, to));
+        }
+        if !base.is_empty() {
+            for (wd, slot) in out.weekdays.iter_mut().enumerate() {
+                *slot = base.iter().filter(|b| b.1[wd]).map(|b| b.0).min();
+            }
+        }
+    }
+
+    // date -> (service code, exception_type)
+    let mut by_date: BTreeMap<String, Vec<(u8, u8)>> = BTreeMap::new();
+    if let Ok(r) = open(dir, "calendar_dates.txt") {
+        let mut rd = csv::Reader::new(r)?;
+        let (cid, cd, ct) = (rd.column("service_id"), rd.column("date"), rd.column("exception_type"));
+        while let Some(rec) = rd.next_record()? {
+            let Some(code) = service_code(csv::get(rec, cid)) else {
+                continue;
+            };
+            let Ok(kind) = csv::get(rec, ct).parse::<u8>() else {
+                continue;
+            };
+            by_date
+                .entry(csv::get(rec, cd).to_string())
+                .or_default()
+                .push((code as u8, kind));
+        }
+    }
+    for (date, changes) in by_date {
+        let Some(d) = day(&date) else {
+            continue;
+        };
+        let wd = weekday(d);
+        let mut active: Vec<u8> = base
+            .iter()
+            .filter(|b| b.1[wd] && b.2 <= d && d <= b.3)
+            .map(|b| b.0)
+            .collect();
+        for &(code, kind) in &changes {
+            match kind {
+                1 if !active.contains(&code) => active.push(code),
+                2 => active.retain(|&c| c != code),
+                _ => {}
+            }
+        }
+        // Several services on one day is not something the SMTR publishes; if it
+        // ever happens, the one the exception added is what the day is about.
+        let added = changes.iter().find(|c| c.1 == 1 && active.contains(&c.0)).map(|c| c.0);
+        let kind = added.or_else(|| active.iter().copied().min());
+        if kind != out.weekdays[wd] {
+            out.exceptions.insert(date, kind);
+        }
+    }
+    Ok(out)
 }
 
 /// Hourly rates to `[service, from_hour, to_hour, minutes]` runs, merging
@@ -403,6 +514,8 @@ pub fn build(dir: &Path) -> Result<Gtfs> {
             }
         }
     }
+
+    g.days = read_calendar(dir)?;
 
     // routes
     let mut route_idx: HashMap<String, u32> = HashMap::new();
@@ -891,6 +1004,11 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
         }
     }
     write_json(&out.join("freq.json"), &serde_json::Value::Object(freq))?;
+    // Which of those services runs on a given date: holidays run Sunday's.
+    write_json(
+        &out.join("calendar.json"),
+        &json!({"weekdays": g.days.weekdays, "exceptions": g.days.exceptions}),
+    )?;
 
     let stops: Vec<serde_json::Value> = g
         .stops
@@ -1083,6 +1201,36 @@ mod tests {
         assert_eq!(sh.next_stop_idx(520.0), Some(2), "clearly past it");
         assert_eq!(sh.next_stop_idx(1000.0), Some(2));
         assert_eq!(sh.next_stop_idx(1010.0), None);
+    }
+
+    #[test]
+    fn holidays_run_the_sunday_service() {
+        let dir = std::env::temp_dir().join(format!("busones-cal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("calendar.txt"),
+            "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n\
+             D_REG,0,0,0,0,0,0,1,20221231,20271231\n\
+             S_REG,0,0,0,0,0,1,0,20221231,20271231\n\
+             U_REG,1,1,1,1,1,0,0,20221231,20271231\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("calendar_dates.txt"),
+            "service_id,date,exception_type\n\
+             D_REG,20261225,1\nU_REG,20261225,2\n\
+             D_REG,20261114,1\nS_REG,20261114,2\n\
+             U_REG,20261224,2\n\
+             D_REG,20261227,1\n",
+        )
+        .unwrap();
+        let d = read_calendar(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(d.weekdays, [Some(2), Some(0), Some(0), Some(0), Some(0), Some(0), Some(1)]);
+        assert_eq!(d.exceptions.get("20261225"), Some(&Some(2)), "Christmas, a Friday");
+        assert_eq!(d.exceptions.get("20261114"), Some(&Some(2)), "a Saturday holiday");
+        assert_eq!(d.exceptions.get("20261224"), Some(&None), "weekday service removed, none added");
+        assert!(!d.exceptions.contains_key("20261227"), "Sunday service on a Sunday changes nothing");
     }
 
     #[test]

@@ -1,0 +1,18 @@
+# /etc/systemd/system/busones-gtfs.service, started by busones-gtfs.timer.
+[Unit]
+Description=Refresh the busones GTFS feed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The repository checkout on the server (scripts, config, data, dist).
+WorkingDirectory=/opt/busones
+Environment=BUSONES_BIN=/usr/local/bin/busones
+Environment=BUSONES_GTFS=/var/lib/busones/gtfs.json.gz
+Environment=BUSONES_ALIASES=/usr/local/share/busones/service-aliases.json
+Environment=BUSONES_INDEX=/run/busones/api/v1/index.json
+# Command that uploads dist/ wherever the static bundles are served from.
+#Environment=BUSONES_PUBLISH_STATIC=
+ExecStart=/opt/busones/scripts/update-gtfs.sh
+Nice=10

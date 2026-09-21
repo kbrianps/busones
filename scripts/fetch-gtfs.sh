@@ -6,6 +6,8 @@
 # rebuild is skipped when the ETag matches the one from the last run.
 set -euo pipefail
 url="${GTFS_URL:-https://dados.mobilidade.rio/gtfs/schedule}"
+# The installed binary on the server, cargo on a laptop.
+bin="${BUSONES_BIN:-cargo run --release --quiet --}"
 dir="${1:-data/gtfs}"
 mkdir -p data
 zip="data/gtfs.zip"
@@ -27,6 +29,6 @@ rm -rf "$dir"
 mkdir -p "$dir"
 unzip -q -o "$zip" -d "$dir"
 rm -f "$zip"
-cargo run --release --quiet -- gtfs build "$dir" data/gtfs.json.gz
+$bin gtfs build "$dir" data/gtfs.json.gz
 [ -n "$new_etag" ] && printf '%s' "$new_etag" > data/gtfs.etag
 echo "done"

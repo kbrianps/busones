@@ -18,8 +18,23 @@ sudo install -d -o root -g root -m 0750 /var/lib/busones
 sudo install -m 0644 data/gtfs.json.gz /var/lib/busones/gtfs.json.gz
 ```
 
-Re-run when the published GTFS changes; the script compares the ETag first. A
-daily timer is enough, the feed moves every few months.
+The feed moves every few months, and holidays live in it too
+(`calendar_dates.txt`: the SMTR runs the Sunday service on them). A daily timer
+keeps both current without manual steps: it downloads the feed, and only when
+the ETag changed rebuilds, re-exports the client bundles, publishes them and
+restarts the service, then logs the live codes the new feed does not know.
+
+```bash
+sudo git clone https://github.com/kbrianps/busones /opt/busones
+sudo cp deploy/busones-gtfs.service deploy/busones-gtfs.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now busones-gtfs.timer
+sudo systemctl start busones-gtfs.service   # first run builds everything
+journalctl -u busones-gtfs.service -n 30
+```
+
+Set `BUSONES_PUBLISH_STATIC` in the unit to the command that uploads `dist/`
+once the static hosting is decided.
 
 The service table ships with the repository. Install it next to the binary and
 re-export the client bundles whenever it or the feed changes, so both agree on

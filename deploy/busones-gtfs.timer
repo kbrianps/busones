@@ -1,0 +1,14 @@
+# /etc/systemd/system/busones-gtfs.timer
+#
+# Once a day in the quietest hour. The feed changes every few months, and the
+# download is skipped from the rebuild on when its ETag has not changed.
+[Unit]
+Description=Daily busones GTFS refresh
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 America/Sao_Paulo
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

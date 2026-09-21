@@ -115,6 +115,8 @@ const est = {
   minhas: [],
   sentido: {},
   catalogo: [],
+  /* Which service runs on which date, from the GTFS calendar. */
+  calendario: null,
   /* Lines on the road now: line -> [buses, has a route]. */
   vivas: new Map(),
   vivasEm: 0,
@@ -278,14 +280,50 @@ function chegadasEm(stopId, linha, headsign) {
     .sort((x, y) => (x[8] + x[9]) / 2 - (x[6] - agoraS()) - ((y[8] + y[9]) / 2 - (y[6] - agoraS())));
 }
 
+/* ---------- day type ----------
+ * Which published service runs now: 0 weekday, 1 Saturday, 2 Sunday, or null
+ * for none. Always in Rio's time zone, whatever the phone is set to, and
+ * corrected for a wrong device clock. Holidays come from the GTFS calendar,
+ * where the SMTR runs the Sunday service. */
+const NOMES_DIA = ['dia útil', 'sábado', 'domingo'];
+const SEMANA = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const relogioRio = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+  // hour12 rather than hourCycle, which old WebViews ignore; some of them say
+  // "24" at midnight, hence the % 24 below.
+  hour: '2-digit', hour12: false, weekday: 'short',
+});
+let diaCache = { em: -1, v: null };
+
+function tipoDia() {
+  // Asked hundreds of times per render by the search; the answer changes at
+  // most once a minute.
+  const minuto = Math.floor(agoraS() / 60);
+  if (diaCache.em === minuto && diaCache.v) return diaCache.v;
+  const p = Object.fromEntries(relogioRio.formatToParts(new Date(agoraS() * 1000)).map(x => [x.type, x.value]));
+  const data = `${p.year}${p.month}${p.day}`;
+  const semana = SEMANA.indexOf(p.weekday);
+  const hora = Number(p.hour) % 24;
+  const c = est.calendario;
+  let v;
+  if (c && data in c.exceptions) v = { svc: c.exceptions[data], feriado: true, hora };
+  else v = { svc: c ? c.weekdays[semana] : semana === 0 ? 2 : semana === 6 ? 1 : 0, feriado: false, hora };
+  diaCache = { em: minuto, v };
+  return v;
+}
+
+/* Headway in minutes for this hour from a list of [svc, from, to, minutes]
+   runs, or null when nothing runs now. */
+function freqNaHora(runs) {
+  if (!runs) return null;
+  const { svc, hora } = tipoDia();
+  const f = runs.find(x => x[0] === svc && hora >= x[1] && hora < x[2]);
+  return f ? f[3] : null;
+}
+
 /* Scheduled headway for this hour, from the published frequencies. */
 function intervaloAgora(dir) {
-  if (!dir || !dir.freq) return null;
-  const d = new Date();
-  const svc = d.getDay() === 0 ? 2 : d.getDay() === 6 ? 1 : 0;
-  const h = d.getHours();
-  const f = dir.freq.find(x => x[0] === svc && h >= x[1] && h < x[2]);
-  return f ? f[3] : null;
+  return dir ? freqNaHora(dir.freq) : null;
 }
 
 /* ---------- left rail ---------- */
@@ -507,9 +545,9 @@ async function desenhaTabela(box, p) {
   if (!linhas.length) { box.append(el('div', 'vazio', 'Sem horários publicados para esta parada.')); return; }
   const lista = el('div');
   box.append(lista);
-  const d = new Date();
-  const svc = d.getDay() === 0 ? 2 : d.getDay() === 6 ? 1 : 0;
-  const nomeDia = ['dia útil', 'sábado', 'domingo'][svc];
+  const dia = tipoDia();
+  const svc = dia.svc;
+  const nomeDia = svc == null ? null : NOMES_DIA[svc];
   for (const l of linhas.slice(0, 30)) {
     const b = await bundle(l);
     if (!b || est.aba !== 'tabela' || est.folha?.id !== p.id) continue;
@@ -522,17 +560,20 @@ async function desenhaTabela(box, p) {
       topo.append(el('span', 'freq-agora', iv ? `a cada ~${iv} min` : 'sem serviço agora'));
       bloco.append(topo);
       const faixas = el('div', 'freq-faixas');
-      const h = d.getHours();
+      const h = dia.hora;
       for (const f of dir.freq.filter(x => x[0] === svc)) {
         const s = el('span', h >= f[1] && h < f[2] ? 'atual' : '', `${f[1]}h às ${f[2]}h ~${f[3]} min`);
         faixas.append(s);
       }
-      if (!faixas.children.length) faixas.append(el('span', '', `sem serviço em ${nomeDia}`));
+      if (!faixas.children.length) faixas.append(el('span', '', nomeDia ? `sem serviço em ${nomeDia}` : 'sem serviço hoje'));
       bloco.append(faixas);
       lista.append(bloco);
     }
   }
-  box.append(el('p', 'nota', `* Intervalo médio publicado pela SMTR para ${nomeDia}. Os horários podem sofrer variações devido ao trânsito, fins de semana e feriados.`));
+  const nota = !nomeDia ? '* A SMTR não publicou serviço para hoje.'
+    : dia.feriado ? `* Hoje é feriado: vale o intervalo médio publicado pela SMTR para ${nomeDia}. Os horários podem variar com o trânsito.`
+    : `* Intervalo médio publicado pela SMTR para ${nomeDia}. Os horários podem variar com o trânsito.`;
+  box.append(el('p', 'nota', nota));
 }
 
 function ligaFolha() {
@@ -631,13 +672,7 @@ async function carregaFreq() {
 /* Scheduled headway of a line for this hour, in minutes, or null when it does
    not run now. */
 function freqAgora(l) {
-  const f = est.freq && est.freq[l];
-  if (!f) return null;
-  const d = new Date();
-  const svc = d.getDay() === 0 ? 2 : d.getDay() === 6 ? 1 : 0;
-  const h = d.getHours();
-  const r = f.find(x => x[0] === svc && h >= x[1] && h < x[2]);
-  return r ? r[3] : null;
+  return freqNaHora(est.freq && est.freq[l]);
 }
 
 const onibusTxt = n => n === 1 ? '1 ônibus' : `${n} ônibus`;
@@ -660,10 +695,9 @@ function estadoLinha(l) {
   if (!est.vivasEm) return h ? { txt: `A cada ~${h} min` } : null;
   const f = est.freq && est.freq[l];
   if (f && h == null) {
-    const d = new Date();
-    const svc = d.getDay() === 0 ? 2 : d.getDay() === 6 ? 1 : 0;
+    const { svc, hora } = tipoDia();
     const hoje = f.filter(x => x[0] === svc);
-    const prox = hoje.map(x => x[1]).filter(x => x > d.getHours()).sort((a, b) => a - b)[0];
+    const prox = hoje.map(x => x[1]).filter(x => x > hora).sort((a, b) => a - b)[0];
     if (prox != null) return { txt: `Não opera neste horário · volta às ${prox} h`, aviso: true };
     return { txt: hoje.length ? 'Não opera mais hoje' : 'Não opera hoje', aviso: true };
   }
@@ -1258,7 +1292,11 @@ async function inicia() {
   $('#engrenagem').onclick = abreAjustes;
   $('#ajustes-voltar').onclick = () => { $('#ajustes').hidden = true; };
 
-  est.catalogo = await pega(`${EST}/lines.json`).catch(() => []);
+  [est.catalogo, est.calendario] = await Promise.all([
+    pega(`${EST}/lines.json`).catch(() => []),
+    pega(`${EST}/calendar.json`).catch(() => null),
+  ]);
+  diaCache.em = -1;
   await paradasEm(est.eu[0], est.eu[1]);
   await Promise.all(est.minhas.map(bundle));
   desenha();

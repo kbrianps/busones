@@ -86,9 +86,14 @@ cargo run --release -- serve
 # One-shot measurement of every upstream feed.
 cargo run --release -- probe
 
-# Static bundles for the browser client (one file per line, stops, stop index).
+# Static bundles for the browser client: one file per line, stops, stop index,
+# headways, and the calendar (holidays run the Sunday service).
 cargo run --release -- gtfs export data/gtfs.json.gz dist
 ```
+
+On the server, `scripts/update-gtfs.sh` runs daily from
+`deploy/busones-gtfs.timer` and does steps 1 and the export only when the feed
+changed, then restarts the service.
 
 Configuration is environment only, so the systemd unit is the single place
 deployment differs from a laptop: `BUSONES_ITS_URL`, `BUSONES_BRT_URL`,
