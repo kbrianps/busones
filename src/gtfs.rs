@@ -217,6 +217,9 @@ pub struct Gtfs {
     /// Live codes that are not passenger lines, from the service table.
     #[serde(skip)]
     pub not_service: HashSet<String>,
+    /// Garage areas, `[x0, y0, x1, y1]` in projected metres.
+    #[serde(skip)]
+    pub garages: Vec<[f32; 4]>,
 }
 
 impl Gtfs {
@@ -326,6 +329,10 @@ impl Gtfs {
             }
         }
         None
+    }
+
+    pub fn in_garage(&self, x: f32, y: f32) -> bool {
+        self.garages.iter().any(|b| b[0] <= x && x <= b[2] && b[1] <= y && y <= b[3])
     }
 
     pub fn shape(&self, idx: u32) -> &Shape {

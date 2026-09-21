@@ -182,6 +182,8 @@ pub enum Phase {
     Pending,
     /// Has not moved in ten minutes and never confirmed a direction: a yard.
     Parked,
+    /// Inside a known garage area: not carrying passengers.
+    Garage,
     InProgress,
     Layover,
     Stale,
@@ -193,6 +195,7 @@ impl Phase {
         match self {
             Phase::Pending => "pending",
             Phase::Parked => "parked",
+            Phase::Garage => "garage",
             Phase::InProgress => "live",
             Phase::Layover => "layover",
             Phase::Stale => "stale",

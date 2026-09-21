@@ -7,12 +7,15 @@ use std::time::Duration;
 
 /// The service table shipped with the repository.
 pub const DEFAULT_ALIASES: &str = "config/service-aliases.json";
+/// The garage areas shipped with the repository.
+pub const DEFAULT_GARAGES: &str = "config/garages.json";
 
 pub struct Config {
     pub its_url: String,
     pub brt_url: String,
     pub gtfs_path: PathBuf,
     pub aliases_path: PathBuf,
+    pub garages_path: PathBuf,
     pub runtime_dir: PathBuf,
     /// Where the history store will live once stop events are computed.
     #[allow(dead_code)]
@@ -38,6 +41,7 @@ impl Config {
             ),
             gtfs_path: env_or("BUSONES_GTFS", "data/gtfs.json.gz").into(),
             aliases_path: env_or("BUSONES_ALIASES", DEFAULT_ALIASES).into(),
+            garages_path: env_or("BUSONES_GARAGES", DEFAULT_GARAGES).into(),
             runtime_dir: env_or("BUSONES_RUNTIME_DIR", "run").into(),
             state_dir: env_or("BUSONES_STATE_DIR", "state").into(),
             status_addr: env_or("BUSONES_STATUS_ADDR", "127.0.0.1:8081").parse()?,

@@ -7,6 +7,7 @@ mod config;
 mod csv;
 mod engine;
 mod geo;
+mod garages;
 mod geocode;
 mod gtfs;
 mod ingest;
@@ -108,7 +109,9 @@ fn gtfs_cmd(args: &[String]) -> Result<()> {
             let t = Instant::now();
             let aliases: PathBuf = std::env::var_os("BUSONES_ALIASES")
                 .map_or_else(|| config::DEFAULT_ALIASES.into(), PathBuf::from);
-            let g = load_gtfs(&src, &aliases)?;
+            let garages: PathBuf = std::env::var_os("BUSONES_GARAGES")
+                .map_or_else(|| config::DEFAULT_GARAGES.into(), PathBuf::from);
+            let g = load_gtfs(&src, &aliases, &garages)?;
             let zoom: u8 = std::env::var("BUSONES_CELL_ZOOM")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -132,8 +135,10 @@ fn gtfs_cmd(args: &[String]) -> Result<()> {
 /// The prepared GTFS with the service table applied. Both `serve` and
 /// `gtfs export` go through here, so live data and the client bundles always
 /// agree on what a line is called.
-fn load_gtfs(path: &std::path::Path, aliases: &std::path::Path) -> Result<gtfs::Gtfs> {
+fn load_gtfs(path: &std::path::Path, aliases: &std::path::Path, garages: &std::path::Path) -> Result<gtfs::Gtfs> {
     let mut g = gtfs::Gtfs::load(path)?;
+    g.garages = garages::load(garages)?;
+    tracing::info!(garages = g.garages.len(), "garage areas loaded");
     let table = gtfs::ServiceTable::load(aliases)?;
     let problems = g.apply_services(&table);
     for p in &problems {
@@ -240,7 +245,7 @@ async fn serve() -> Result<()> {
     let started_at = timeutil::now();
 
     let t = Instant::now();
-    let g = load_gtfs(&cfg.gtfs_path, &cfg.aliases_path)?;
+    let g = load_gtfs(&cfg.gtfs_path, &cfg.aliases_path, &cfg.garages_path)?;
     tracing::info!("gtfs loaded in {:.1}s: {}", t.elapsed().as_secs_f32(), g.summary());
     let gtfs = Arc::new(g);
 

@@ -46,8 +46,13 @@ line names (see `config/README.md`):
 
 ```bash
 sudo install -D -m 0644 config/service-aliases.json /usr/local/share/busones/service-aliases.json
+sudo install -D -m 0644 config/garages.json /usr/local/share/busones/garages.json
 BUSONES_ALIASES=config/service-aliases.json busones gtfs export data/gtfs.json.gz dist
 ```
+
+The garage areas (`config/garages.json`) come from where buses sleep at 03:00
+and 04:00; regenerate them with `scripts/garage-evidence.py` when operators
+move garages, then reinstall and restart.
 
 ## 3. Services
 

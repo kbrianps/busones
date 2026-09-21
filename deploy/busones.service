@@ -14,6 +14,7 @@ Environment=BUSONES_RUNTIME_DIR=/run/busones
 Environment=BUSONES_STATE_DIR=/var/lib/busones
 Environment=BUSONES_GTFS=/var/lib/busones/gtfs.json.gz
 Environment=BUSONES_ALIASES=/usr/local/share/busones/service-aliases.json
+Environment=BUSONES_GARAGES=/usr/local/share/busones/garages.json
 Environment=BUSONES_STATUS_ADDR=127.0.0.1:8081
 Environment=BUSONES_LOG=info
 

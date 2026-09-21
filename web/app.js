@@ -1132,7 +1132,7 @@ function scene() {
   const focusSet = state.focused;
   const seen = new Set();
   const addBus = (v, color) => {
-    if (seen.has(v.id) || v.ph === 'parked') return;
+    if (seen.has(v.id) || v.ph === 'parked' || v.ph === 'garage') return;
     const stale = nowS() - v.t > 180;
     if (stale && !staleOk) return;
     seen.add(v.id);

@@ -97,7 +97,7 @@ changed, then restarts the service.
 
 Configuration is environment only, so the systemd unit is the single place
 deployment differs from a laptop: `BUSONES_ITS_URL`, `BUSONES_BRT_URL`,
-`BUSONES_GTFS`, `BUSONES_ALIASES`, `BUSONES_RUNTIME_DIR`, `BUSONES_STATE_DIR`,
+`BUSONES_GTFS`, `BUSONES_ALIASES`, `BUSONES_GARAGES`, `BUSONES_RUNTIME_DIR`, `BUSONES_STATE_DIR`,
 `BUSONES_STATUS_ADDR`, `BUSONES_CELL_ZOOM`, `BUSONES_WARM_MINUTES`,
 `BUSONES_PUBLISH_SECS`, `BUSONES_BRT_SECS`, `BUSONES_LOG`.
 
@@ -143,7 +143,7 @@ Vehicle fields:
 | `t` | unix seconds of the GPS fix, from the device clock |
 | `lat`, `lon` | position, 5 decimal places |
 | `brg` | bearing in degrees, or null |
-| `ph` | `live`, `layover`, `pending`, `parked`, `stale` or `offroute` |
+| `ph` | `live`, `layover`, `pending`, `parked`, `garage`, `stale` or `offroute` |
 | `dir` | `ida`, `volta` or `circular`; absent until direction is confirmed |
 | `shp` | GTFS shape id of the confirmed pass |
 | `alo` | metres travelled along that shape |
@@ -200,9 +200,11 @@ Phase 1 is here. Still to come:
   expressed in stops and distance.
 - **Phase 3**: stop events, per-segment travel-time history by day type, arrival
   predictions published as calibrated ranges rather than a single minute.
-- Garage polygons. Until they exist, a vehicle that has not moved 100 m in ten
-  minutes and never confirmed a direction is classified `parked` and left out of
-  the direction-rate denominator.
+- Buses driving back to the garage with their last line still set, before they
+  reach it. A bus inside one of the garage areas in `config/garages.json` and
+  away from its own route is already `garage` and left out of the map and the
+  arrivals; a vehicle that has not moved 100 m in ten minutes and never
+  confirmed a direction is `parked`.
 - Per-vendor fallbacks for when the aggregator is unavailable. It is in beta and
   undocumented, so the ingestion contract is deliberately isolated.
 

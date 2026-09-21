@@ -33,6 +33,10 @@ pub const OFF_ROUTE_S: i64 = 600;
 /// confirmed a direction is sitting in a yard, not serving its line.
 pub const PARKED_RADIUS_M: f32 = 100.0;
 pub const PARKED_AFTER_S: i64 = 600;
+/// Inside a garage area but this close to its own route, a bus is driving
+/// past on the street or resting at a terminal, not parked in the yard:
+/// most garages face streets that dozens of lines use.
+pub const GARAGE_ROUTE_M: f32 = 35.0;
 /// Two fixes from the two on-board units can be seconds apart; below this gap
 /// no physical rule may be applied to the pair.
 pub const MOTION_MIN_DT_S: f32 = 10.0;
@@ -536,7 +540,7 @@ impl Engine {
             .vehicles
             .values()
             .filter(|v| {
-                v.route.is_some() && v.phase != Phase::Parked && v.phase != Phase::Stale
+                v.route.is_some() && !matches!(v.phase, Phase::Parked | Phase::Stale | Phase::Garage)
             })
             .count();
         m.insert("matched".into(), matched);
@@ -559,7 +563,7 @@ impl Engine {
         let mut m = std::collections::BTreeMap::new();
         let mut bump = |k: &str| *m.entry(k.to_string()).or_insert(0) += 1;
         for v in self.vehicles.values() {
-            if v.fixed.is_some() || v.phase == Phase::Stale || v.phase == Phase::Parked {
+            if v.fixed.is_some() || matches!(v.phase, Phase::Stale | Phase::Parked | Phase::Garage) {
                 continue;
             }
             if v.route.is_none() {
@@ -713,6 +717,11 @@ fn candidate_shapes(gtfs: &Gtfs, v: &Vehicle, f: &Fix) -> Candidates {
 }
 
 fn update_phase(v: &mut Vehicle, gtfs: &Gtfs, now: i64) {
+    let on_route = v.beam.iter().any(|h| h.dist <= GARAGE_ROUTE_M);
+    if !on_route && gtfs.in_garage(v.x, v.y) {
+        v.phase = Phase::Garage;
+        return;
+    }
     let best_dist = v.beam.first().map(|h| h.dist).unwrap_or(f32::MAX);
     if best_dist > matcher::TENTATIVE_M {
         let since = *v.off_route_since.get_or_insert(now);
@@ -870,6 +879,52 @@ mod tests {
         f.service = Some("GARAGEM".into());
         assert_eq!(e.apply(f, now), Outcome::OutOfService);
         assert!(e.snapshot().is_empty());
+    }
+
+    /// A fix `north` metres off the test shape, which runs east.
+    fn fix_off(g: &Gtfs, id: &str, t: i64, along: f32, north: f32) -> Fix {
+        let (x, y) = g.shape(0).point_at(along);
+        let (lat, lon) = geo::unproject(x, y + north);
+        let mut f = Fix::new(id.into(), Vendor::Zirix, t, lat, lon);
+        f.service = Some("474".into());
+        f.dir = Some(Dir::Ida);
+        f
+    }
+
+    fn with_garage_at(g: Arc<Gtfs>, along: f32, north: f32) -> Arc<Gtfs> {
+        let (x, y) = g.shape(0).point_at(along);
+        let mut g = Arc::try_unwrap(g).ok().unwrap();
+        // 300 m square, reaching over the route like a real one on a main road.
+        g.garages = vec![[x - 150.0, y + north - 150.0, x + 150.0, y + north + 150.0]];
+        Arc::new(g)
+    }
+
+    #[test]
+    fn a_bus_in_the_garage_yard_is_out_of_service() {
+        let g = with_garage_at(gtfs(), 1000.0, 120.0);
+        let mut e = Engine::new(g.clone());
+        let now = 1_800_000_000;
+        for i in 0..3 {
+            let t = now + 30 * i;
+            e.apply(fix_off(&g, "A1", t, 1000.0 + 5.0 * i as f32, 120.0), t);
+        }
+        assert_eq!(e.vehicles["A1"].phase, Phase::Garage);
+        assert_eq!(e.snapshot()[0].ph_line(), "garage");
+        assert!(e.arrivals().is_empty(), "a garaged bus is never announced");
+        assert_eq!(e.phase_counts()["in_service"], 0);
+    }
+
+    #[test]
+    fn a_bus_driving_past_a_garage_stays_in_service() {
+        let g = with_garage_at(gtfs(), 1500.0, 60.0);
+        let mut e = Engine::new(g.clone());
+        let t0 = 1_800_000_000;
+        for (k, along) in [1300.0f32, 1450.0, 1600.0, 1750.0].iter().enumerate() {
+            let t = t0 + 30 * k as i64;
+            e.apply(fix_at(&g, "A1", t, *along, Vendor::Zirix), t);
+        }
+        assert_ne!(e.vehicles["A1"].phase, Phase::Garage, "on its own route, in front of the gate");
+        assert!(!e.arrivals().is_empty());
     }
 
     #[test]

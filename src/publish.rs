@@ -196,11 +196,11 @@ impl Publisher {
     /// `[[line, buses, has_route]]` for every line with a bus on the road now,
     /// busiest first. Lets the search say "3 ônibus agora" or "nenhum ônibus
     /// com sinal" without fetching every line, and find lines the GTFS does not
-    /// have (`has_route` 0). Stale and parked buses do not count.
+    /// have (`has_route` 0). Stale, parked and garaged buses do not count.
     fn render_live_lines(&self, outs: &[Out]) -> Vec<u8> {
         let mut n: HashMap<&str, usize> = HashMap::new();
         for o in outs {
-            if o.phase != "stale" && o.phase != "parked" {
+            if !matches!(o.phase, "stale" | "parked" | "garage") {
                 *n.entry(o.line.as_str()).or_default() += 1;
             }
         }

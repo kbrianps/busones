@@ -80,3 +80,20 @@ their buses on the map, no direction and no arrival times.
 
 Check again whenever the GTFS ETag changes: a new feed may add these routes or
 rename the ones above.
+
+# Garage areas
+
+`garages.json` lists the areas where buses spend the night, as boxes with the
+number of buses seen standing still in each. `scripts/garage-evidence.py`
+builds it from every bus position at 03:00 and 04:00 in Rio over the last
+three nights: vehicles standing still are grouped on a 60 m grid, and a group
+of at least 40 buses, or at least 20 more than 150 m from the end of any GTFS
+route, is a garage. Smaller groups at route ends are terminals and are left
+out.
+
+A bus inside an area counts as out of service only when it is also more than
+35 m from its own route. Most garages face streets that dozens of lines use,
+and a bus driving past the gate or resting at a terminal on its route stays in
+service.
+
+First generated on 2026-09-21: 23 garages, from 303 buses down to 23.
