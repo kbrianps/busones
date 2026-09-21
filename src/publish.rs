@@ -427,6 +427,8 @@ mod tests {
             route_type: 700,
             shapes: vec![],
             aka: Vec::new(),
+            color: String::new(),
+            text_color: String::new(),
         });
         g.finish();
         let mut p = Publisher::new(dir.clone(), 13, &g).unwrap();
@@ -454,6 +456,8 @@ mod tests {
             route_type: 700,
             shapes: vec![],
             aka: Vec::new(),
+            color: String::new(),
+            text_color: String::new(),
         });
         g.finish();
         let p = Publisher::new(dir.clone(), 13, &g).unwrap();

@@ -97,7 +97,7 @@ body.buscando #onde { display: none; }
 .sug-vazio { padding: 14px 16px; color: var(--texto-2); font-size: 14px; }
 .sug-nota { padding: 2px 16px 12px; color: var(--texto-2); font-size: 12.5px; line-height: 1.4; }
 
-/* ---------- line badge (navy, like the stop sheet rows) ---------- */
+/* ---------- line badge: the line's official colour, navy until it loads ---------- */
 .selo {
   display: inline-grid; place-items: center; width: 58px; height: 26px; padding: 0; flex: none;
   border-radius: 7px; background: var(--marinho); color: #fff; overflow: hidden;
@@ -111,7 +111,7 @@ body.buscando #onde { display: none; }
 .numero {
   width: 44px; height: 44px; flex: none; padding: 0;
   border: 2px solid transparent; border-radius: 11px;
-  background: var(--cor); color: #fff;
+  background: var(--cor); color: var(--cor-texto, #fff);
   display: grid; place-items: center; overflow: hidden; text-align: center;
   font: 700 13.6px/1 system-ui, -apple-system, Roboto, sans-serif; letter-spacing: .01em;
   box-shadow: 0 4px 14px rgba(15, 23, 42, .1);
@@ -249,7 +249,7 @@ body.folha-aberta #trilho, body.local-aberto #trilho { display: none; }
   filter: drop-shadow(0 2px 6px rgba(60,64,67,.35));
 }
 .balao-corpo { display: flex; border-radius: 10px; overflow: hidden; background: var(--fundo); }
-.balao-linha { background: var(--cor); color: #fff; padding: 7px 11px; text-align: center; }
+.balao-linha { background: var(--cor); color: var(--cor-texto, #fff); padding: 7px 11px; text-align: center; }
 .balao-linha b { display: block; font-size: 20px; font-weight: 700; line-height: 1.1; }
 .balao-linha small { display: block; font-size: 11px; margin-top: 3px; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,.25); }
 .balao-info { padding: 7px 12px; font-size: 13px; display: flex; flex-direction: column; justify-content: center; gap: 2px; white-space: nowrap; }

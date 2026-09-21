@@ -314,9 +314,11 @@ function desenhaMapa() {
     sinal(x, y, 28, '#303f9f');
   }
 
-  // Buses: number badge plus heading arrow.
+  // Buses: number badge plus heading arrow. Their line numbers, when shown,
+  // keep clear of the stop labels, which are drawn on top.
+  const ocupado = etiquetas.map(([x, y, t]) => caixaEtiqueta(ctx, x, y, t));
   for (const o of c.onibus) {
-    const hit = desenhaOnibus(ctx, o);
+    const hit = desenhaOnibus(ctx, o, ocupado);
     if (hit) alvos.push({ tipo: 'onibus', ...hit, v: o.v, cor: o.cor });
   }
   // Stop labels last, so an arriving bus never hides what the stop is.
@@ -340,11 +342,19 @@ function desenhaMapa() {
 }
 
 /* A small white tag beside a map symbol, flipped to the left near the edge. */
-function etiqueta(ctx, x, y, txt, noite) {
+/* Where a stop label goes: to the right of the sign, or to the left near the
+   edge of the screen. */
+function caixaEtiqueta(ctx, x, y, txt) {
   ctx.font = '600 12px system-ui, -apple-system, Roboto, sans-serif';
   const w = ctx.measureText(txt).width + 14, h = 22;
   let lx = x + 17;
   if (lx + w > mapa.W - 8) lx = x - 17 - w;
+  return { x0: lx, y0: y - h / 2, x1: lx + w, y1: y + h / 2 };
+}
+
+function etiqueta(ctx, x, y, txt, noite) {
+  const b = caixaEtiqueta(ctx, x, y, txt);
+  const lx = b.x0, h = b.y1 - b.y0, w = b.x1 - b.x0;
   retangulo(ctx, lx, y - h / 2, w, h, 11);
   ctx.fillStyle = noite ? '#303134' : '#ffffff';
   ctx.shadowColor = 'rgba(60,64,67,.35)';
@@ -428,7 +438,7 @@ function gota(ctx, x, y, cor, rumo, escala) {
   ctx.restore();
 }
 
-function desenhaOnibus(ctx, o) {
+function desenhaOnibus(ctx, o, ocupado = []) {
   const v = o.v;
   const [x, y] = naTela(v.lat, v.lon);
   if (x < -40 || y < -40 || x > mapa.W + 40 || y > mapa.H + 40) return null;
@@ -437,8 +447,39 @@ function desenhaOnibus(ctx, o) {
   if (v.ph === 'pending') ctx.globalAlpha = 0.45;
   gota(ctx, x, y, o.velho ? '#94a3b8' : o.cor, v.brg, escala);
   ctx.restore();
+  // The line number beside the bus, only when another line on the map has
+  // the same colour: to the right, else wherever it hides no stop label and no
+  // other number.
+  if (o.rotulo) {
+    ctx.font = ROTULO_FONTE;
+    const w = Math.ceil(ctx.measureText(o.rotulo.txt).width) + 10, h = 17;
+    const opcoes = [
+      [x + 13 * escala, y - 14 * escala], [x - 13 * escala - w, y - 14 * escala],
+      [x + 13 * escala, y + 8 * escala], [x - 13 * escala - w, y + 8 * escala],
+    ].map(([lx, cy]) => ({ x0: lx, y0: cy - h / 2, x1: lx + w, y1: cy + h / 2 }));
+    const livre = opcoes.find(b => !ocupado.some(q => b.x0 < q.x1 && b.x1 > q.x0 && b.y0 < q.y1 && b.y1 > q.y0)) || opcoes[0];
+    ocupado.push(livre);
+    rotuloLinha(ctx, livre, o.rotulo);
+  }
   // Without a heading the pin's body is above the point, so the target moves up.
   return v.brg != null ? { x, y, r: 18 * escala } : { x, y: y - 22 * escala, r: 18 * escala };
+}
+
+const ROTULO_FONTE = '700 11px system-ui, -apple-system, Roboto, sans-serif';
+function rotuloLinha(ctx, b, r) {
+  ctx.save();
+  ctx.font = ROTULO_FONTE;
+  retangulo(ctx, b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0, 5);
+  ctx.fillStyle = r.fundo;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+  ctx.fillStyle = r.texto;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(r.txt, b.x0 + 5, (b.y0 + b.y1) / 2 + 0.5);
+  ctx.restore();
 }
 
 /* Fit points into the part of the map that the search bar, pills or sheet

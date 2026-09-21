@@ -16,7 +16,7 @@ use std::path::Path;
 use crate::csv;
 use crate::geo;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct Route {
     pub id: String,
     pub short_name: String,
@@ -26,6 +26,26 @@ pub struct Route {
     /// Other codes this line answers to, from the service table.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aka: Vec<String>,
+    /// Official colour, `#RRGGBB` or empty. In Rio it is the stripe of the
+    /// line's operating region on the new yellow buses (SMTR resolution 3870).
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub text_color: String,
+}
+
+/// Bumped whenever `gtfs build` starts extracting something new, so a server
+/// never runs on an artifact that silently lacks it.
+pub const FORMAT: u32 = 2;
+
+/// `FF7600` or `ff7600` to `#FF7600`; anything else to empty.
+fn hex_color(s: &str) -> String {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() == 6 && s.bytes().all(|c| c.is_ascii_hexdigit()) {
+        format!("#{}", s.to_ascii_uppercase())
+    } else {
+        String::new()
+    }
 }
 
 /// Live service codes the published GTFS spells differently, and codes that
@@ -177,6 +197,9 @@ impl Default for DayTypes {
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct Gtfs {
+    /// See [`FORMAT`].
+    #[serde(default)]
+    pub format: u32,
     pub feed_version: String,
     #[serde(default)]
     pub days: DayTypes,
@@ -319,6 +342,15 @@ impl Gtfs {
         let dec = flate2::read::GzDecoder::new(BufReader::with_capacity(1 << 20, f));
         let mut g: Gtfs = serde_json::from_reader(BufReader::with_capacity(1 << 20, dec))
             .context("parsing prepared GTFS")?;
+        if g.format < FORMAT {
+            bail!(
+                "{} was prepared by an older busones (format {}, need {}); rebuild it with \
+                 `FORCE=1 scripts/fetch-gtfs.sh`",
+                path.display(),
+                g.format,
+                FORMAT
+            );
+        }
         g.finish();
         Ok(g)
     }
@@ -500,7 +532,10 @@ fn open(dir: &Path, name: &str) -> Result<BufReader<std::fs::File>> {
 
 /// Builds the prepared artifact from a directory of extracted GTFS text files.
 pub fn build(dir: &Path) -> Result<Gtfs> {
-    let mut g = Gtfs::default();
+    let mut g = Gtfs {
+        format: FORMAT,
+        ..Gtfs::default()
+    };
 
     // feed_info is optional and often has no version; keep whatever is there.
     if let Ok(r) = open(dir, "feed_info.txt") {
@@ -521,11 +556,13 @@ pub fn build(dir: &Path) -> Result<Gtfs> {
     let mut route_idx: HashMap<String, u32> = HashMap::new();
     {
         let mut rd = csv::Reader::new(open(dir, "routes.txt")?)?;
-        let (ci, cs, cl, ct) = (
+        let (ci, cs, cl, ct, cc, ctc) = (
             rd.column("route_id"),
             rd.column("route_short_name"),
             rd.column("route_long_name"),
             rd.column("route_type"),
+            rd.column("route_color"),
+            rd.column("route_text_color"),
         );
         while let Some(rec) = rd.next_record()? {
             let id = csv::get(rec, ci).to_string();
@@ -540,6 +577,8 @@ pub fn build(dir: &Path) -> Result<Gtfs> {
                 route_type: csv::get(rec, ct).parse().unwrap_or(0),
                 shapes: Vec::new(),
                 aka: Vec::new(),
+                color: hex_color(csv::get(rec, cc)),
+                text_color: hex_color(csv::get(rec, ctc)),
             });
         }
     }
@@ -920,6 +959,8 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
             "line": route.short_name,
             "name": route.long_name,
             "type": route.route_type,
+            "color": route.color,
+            "text": route.text_color,
             "dirs": dirs,
         });
         let name = sanitize(&route.short_name);
@@ -945,9 +986,9 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
         })
         .collect();
 
-    // Every line with its destinations and any other code it answers to, so a
-    // rider can add a line by number, by old code or by where it goes,
-    // including lines that do not pass near them.
+    // Every line with its destinations, any other code it answers to and its
+    // official colours, so a rider can add a line by number, by old code or by
+    // where it goes, including lines that do not pass near them.
     let mut catalogo: Vec<serde_json::Value> = g
         .routes
         .iter()
@@ -960,7 +1001,7 @@ pub fn export(g: &Gtfs, out: &Path, cell_zoom: u8) -> Result<()> {
                 .collect();
             dests.sort_unstable();
             dests.dedup();
-            json!([r.short_name, r.long_name, r.route_type, dests, r.aka])
+            json!([r.short_name, r.long_name, r.route_type, dests, r.aka, r.color, r.text_color])
         })
         .collect();
     catalogo.sort_by(|a, b| a[0].as_str().cmp(&b[0].as_str()));
@@ -1141,6 +1182,8 @@ mod tests {
                 route_type: 700,
                 shapes: vec![0],
                 aka: Vec::new(),
+                color: String::new(),
+                text_color: String::new(),
             }],
             shapes: vec![Shape {
                 id: "s1".into(),
@@ -1201,6 +1244,14 @@ mod tests {
         assert_eq!(sh.next_stop_idx(520.0), Some(2), "clearly past it");
         assert_eq!(sh.next_stop_idx(1000.0), Some(2));
         assert_eq!(sh.next_stop_idx(1010.0), None);
+    }
+
+    #[test]
+    fn route_colors_are_normalised() {
+        assert_eq!(hex_color("ff7600"), "#FF7600");
+        assert_eq!(hex_color(" #1B47B9 "), "#1B47B9");
+        assert_eq!(hex_color(""), "");
+        assert_eq!(hex_color("red"), "");
     }
 
     #[test]

@@ -19,19 +19,16 @@ const RAIO_PERTO = 600;
 const RECARGA_MS = 12000;
 const CENTRO = [-22.9068, -43.1729];
 
-/* The palette from onibus-rj, the first version of this app, so the lines
-   you follow keep the colours they had there. */
-const CORES = [
-  'hsl(199, 89%, 48%)', 'hsl(28, 89%, 48%)', 'hsl(140, 70%, 38%)',
-  'hsl(270, 70%, 55%)', 'hsl(330, 80%, 50%)', 'hsl(170, 75%, 38%)',
-  'hsl(245, 75%, 55%)', 'hsl(45, 85%, 47%)', 'hsl(305, 70%, 48%)',
-];
+/* For the few lines the GTFS gives no colour, and lines without a route. */
+const COR_SEM_OFICIAL = '#546E7A';
 
 /* The badge used in lists: always the same width, so destinations line up in
    one column whatever the code ("3" or "LECD148"); the type shrinks instead. */
 function selo(l, extra = '') {
   const s = el('span', 'selo' + (extra ? ' ' + extra : ''), l);
   s.dataset.tam = String(Math.min(7, Math.max(4, l.length)));
+  s.style.background = corDaLinha(l);
+  s.style.color = textoDaLinha(l);
   return s;
 }
 
@@ -40,6 +37,7 @@ function selo(l, extra = '') {
 function numero(l, tag = 'div') {
   const n = el(tag, 'numero', l);
   n.style.setProperty('--cor', corDaLinha(l));
+  n.style.setProperty('--cor-texto', textoDaLinha(l));
   n.dataset.tam = l.length <= 4 ? 'p' : l.length <= 6 ? 'm' : 'g';
   return n;
 }
@@ -115,6 +113,8 @@ const est = {
   minhas: [],
   sentido: {},
   catalogo: [],
+  /* Official colours: line -> [background, text]. */
+  cores: new Map(),
   /* Which service runs on which date, from the GTFS calendar. */
   calendario: null,
   /* Lines on the road now: line -> [buses, has a route]. */
@@ -160,9 +160,60 @@ function carrega() {
   } catch {}
 }
 
+/* ---------- line colours ----------
+ * Every line has one fixed colour: the official one from the GTFS. In Rio it
+ * is the stripe of the line's operating region on the new yellow buses (grey
+ * for Tijuca, Centro and Zona Sul, orange for Campo Grande, pink for
+ * Jacarepaguá...), the corridor colour for the BRT and navy for the executive
+ * lines. Badges use it as published. The map only shifts its lightness until
+ * it stands out from the background: the official grey would vanish among the
+ * streets of a light map, and the navy on a dark one. */
 function corDaLinha(l) {
-  const i = est.minhas.indexOf(l);
-  return i >= 0 ? CORES[i % CORES.length] : '#303f9f';
+  const c = est.cores.get(l);
+  return (c && c[0]) || COR_SEM_OFICIAL;
+}
+function textoDaLinha(l) {
+  const c = est.cores.get(l);
+  if (c && c[0] && c[1]) return c[1];
+  return luminancia(corDaLinha(l)) > 0.35 ? '#000000' : '#FFFFFF';
+}
+
+const rgb = hex => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+function luminancia(hex) {
+  const [r, g, b] = rgb(hex).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contraste(a, b) {
+  const [x, y] = [luminancia(a), luminancia(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
+const realcadas = new Map();
+/* The colour, mixed with black (on a light background) or white (on a dark
+   one) in small steps until it reaches the minimum contrast. Hue is kept, so
+   the grey line is still grey and the orange one still orange. */
+function realca(cor, fundo, minimo) {
+  const k = `${cor}|${fundo}|${minimo}`;
+  if (realcadas.has(k)) return realcadas.get(k);
+  let res = cor;
+  if (contraste(cor, fundo) < minimo) {
+    const alvo = luminancia(fundo) > 0.5 ? 0 : 255;
+    const base = rgb(cor);
+    res = alvo ? '#FFFFFF' : '#000000';
+    for (let t = 0.05; t < 1; t += 0.05) {
+      const hex = '#' + base.map(v => Math.round(v + (alvo - v) * t).toString(16).padStart(2, '0')).join('');
+      if (contraste(hex, fundo) >= minimo) { res = hex; break; }
+    }
+  }
+  realcadas.set(k, res);
+  return res;
+}
+/* A line's colour for routes, stops and buses on the map. */
+function corNoMapa(l) {
+  return realca(corDaLinha(l), escuro() ? '#1C1D20' : '#F4F4F1', 3);
+}
+/* A line's colour as text on the app's own background, as in the line menu. */
+function corLegivel(l) {
+  return realca(corDaLinha(l), escuro() ? '#202124' : '#FFFFFF', 4.5);
 }
 
 /* ---------- data ---------- */
@@ -358,7 +409,7 @@ function abreMenuLinha(l, ancora) {
   const m = el('div', 'menu-linha');
   m.id = 'menu';
   m.setAttribute('role', 'menu');
-  m.style.setProperty('--cor', corDaLinha(l));
+  m.style.setProperty('--cor', corLegivel(l));
   const item = (txt, acao, extra) => {
     const b = el('button', extra || '', txt);
     b.setAttribute('role', 'menuitem');
@@ -453,7 +504,6 @@ function linhaHora(grupo) {
   row.tabIndex = 0;
 
   const badge = selo(grupo.linha, 'hora-selo');
-  if (est.minhas.includes(grupo.linha)) badge.style.background = corDaLinha(grupo.linha);
   const destino = el('div', 'hora-destino', grupo.destino);
   const meta = el('div', 'hora-meta');
   const est_ = el('button', 'est');
@@ -646,7 +696,6 @@ function sug(nome, legenda, tituloFixo) {
   e.setAttribute('aria-label', seguida ? `Parar de acompanhar ${nome}` : `Acompanhar ${nome}`);
   e.onclick = ev => { ev.stopPropagation(); segue(nome, !seguida); desenhaSugestoes(); };
   const badge = selo(nome);
-  if (seguida) badge.style.background = corDaLinha(nome);
   const t = el('div', 'sug-txt');
   const titulo = el('div');
   const txt = tituloFixo || (c ? origemDestino(c) : nome);
@@ -858,7 +907,8 @@ function desenhaBalao() {
   b.textContent = '';
   const corpo = el('div', 'balao-corpo');
   const lb = el('div', 'balao-linha');
-  lb.style.setProperty('--cor', v.cor);
+  lb.style.setProperty('--cor', corDaLinha(v.line));
+  lb.style.setProperty('--cor-texto', textoDaLinha(v.line));
   lb.append(el('b', '', v.line), el('small', '', v.id));
   const info = el('div', 'balao-info');
   const s1 = el('div', 'sinal');
@@ -966,14 +1016,14 @@ function cena() {
     const velho = agoraS() - v.t > 180;
     if (velho && !velhoOk) return;
     vistos.add(v.id);
-    c.onibus.push({ v, cor, velho });
+    c.onibus.push({ v, cor, velho, rotulo: null });
   };
 
   for (const l of est.minhas) {
     if (foco.size && !foco.has(l)) continue;
     const b = est.bundles.get(l);
     const d = dirAtual(l);
-    const cor = corDaLinha(l);
+    const cor = corNoMapa(l);
     if (!b) {
       // No published route: no direction to pick and no stop to wait at, so
       // every bus of the line is shown.
@@ -1011,7 +1061,20 @@ function cena() {
     const frotas = [...est.frotas.values()].flat();
     for (const a of chegadasEm(est.folha.id).slice(0, 8)) {
       const v = frotas.find(x => x.id === a[7]) || est.veiculosFolha.find(x => x.id === a[7]);
-      if (v) addOnibus({ ...v, line: a[1] }, corDaLinha(a[1]));
+      if (v) addOnibus({ ...v, line: a[1] }, corNoMapa(a[1]));
+    }
+  }
+  // Lines of one region share its colour. When two lines on the map do, their
+  // buses carry the number, the way apps in cities where every bus is red
+  // tell them apart.
+  const linhasPorCor = new Map();
+  for (const o of c.onibus) {
+    if (!linhasPorCor.has(o.cor)) linhasPorCor.set(o.cor, new Set());
+    linhasPorCor.get(o.cor).add(o.v.line);
+  }
+  for (const o of c.onibus) {
+    if (linhasPorCor.get(o.cor).size > 1) {
+      o.rotulo = { txt: o.v.line, fundo: corDaLinha(o.v.line), texto: textoDaLinha(o.v.line) };
     }
   }
   return c;
@@ -1297,6 +1360,7 @@ async function inicia() {
     pega(`${EST}/calendar.json`).catch(() => null),
   ]);
   diaCache.em = -1;
+  est.cores = new Map(est.catalogo.map(c => [c[0], [c[5] || '', c[6] || '']]));
   await paradasEm(est.eu[0], est.eu[1]);
   await Promise.all(est.minhas.map(bundle));
   desenha();

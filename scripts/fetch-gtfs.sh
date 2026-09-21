@@ -19,7 +19,8 @@ curl -fsSL -D "$hdr" -o "$zip" "$url"
 new_etag="$(awk 'tolower($1)=="etag:"{print $2}' "$hdr" | tail -1 | tr -d '\r"')"
 prev_etag="$(cat data/gtfs.etag 2>/dev/null || true)"
 
-if [ -n "$new_etag" ] && [ "$new_etag" = "$prev_etag" ] && [ -f data/gtfs.json.gz ] && [ -f "$dir/stop_times.txt" ]; then
+# FORCE=1 rebuilds anyway, for a new busones that extracts more from the feed.
+if [ -z "${FORCE:-}" ] && [ -n "$new_etag" ] && [ "$new_etag" = "$prev_etag" ] && [ -f data/gtfs.json.gz ] && [ -f "$dir/stop_times.txt" ]; then
   echo "feed unchanged (etag $new_etag); nothing to do"
   rm -f "$zip"
   exit 0

@@ -36,6 +36,10 @@ journalctl -u busones-gtfs.service -n 30
 Set `BUSONES_PUBLISH_STATIC` in the unit to the command that uploads `dist/`
 once the static hosting is decided.
 
+After upgrading the binary, `busones serve` refuses an artifact prepared by an
+older version (it would silently lack new fields such as holidays or line
+colours). Rebuild it once with `FORCE=1 ./scripts/update-gtfs.sh`.
+
 The service table ships with the repository. Install it next to the binary and
 re-export the client bundles whenever it or the feed changes, so both agree on
 line names (see `config/README.md`):

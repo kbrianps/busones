@@ -255,3 +255,11 @@ Ao abrir a busca de linha, depois de "Suas linhas", vêm as linhas a até 600 m 
 ## Revisão 4.9: selos de largura fixa nas listas
 
 Nas listas (horários da parada, busca, tabela de horários) todo selo tem 58 px de largura, e os destinos começam na mesma coluna. A fonte diminui com o código: 14 px até 4 caracteres, 13 px com 5 (SV777), 11,5 px com 6 e 10,5 px com 7 (LECD142).
+
+## Revisão 4.10: cor oficial fixa por linha
+
+A paleta do onibus-rj, sorteada pela posição da linha no trilho, saiu: o Brian achou as cores feias, e a cor de uma linha mudava quando outra era removida. Cada linha agora tem sempre a mesma cor, a oficial do GTFS da SMTR (`route_color` e `route_text_color`), que é a faixa da região de operação na nova pintura dos ônibus (Resolução SMTR 3870, de 2025): cinza para Grande Tijuca, Centro e Zona Sul; azul-escuro para Pavuna e Leopoldina; verde para Anchieta, Madureira e Méier; vermelho para a Ilha do Governador; rosa para Jacarepaguá; azul-claro para a Barra; laranja para Campo Grande e Guaratiba; marrom para Bangu e Realengo; roxo para Santa Cruz. Os executivos são azul-marinho e cada corredor do BRT tem a sua cor. É o que Google Maps, Moovit, Transit e Citymapper fazem com a cor da agência.
+
+- **Selos** (trilho, listas, balão) usam a cor e a cor de texto oficiais, sem ajuste. As 10 linhas sem cor no GTFS e as linhas sem rota usam `#546E7A`.
+- **Mapa** (rota, paradas e ônibus): a mesma cor, só mais escura (tema claro) ou mais clara (tema escuro) até ter contraste de 3:1 com o fundo. O cinza oficial sumiria entre as ruas do mapa claro, e o azul-marinho no escuro. No menu do selo, a cor como texto vai até 4,5:1.
+- **Mesma cor, linhas diferentes**: linhas da mesma região têm a mesma cor. Quando duas linhas no mapa têm, cada ônibus delas leva o número ao lado, fora das etiquetas das paradas, como nos apps de cidades em que todo ônibus é da mesma cor.

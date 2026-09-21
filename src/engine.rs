@@ -792,6 +792,8 @@ mod tests {
                 route_type: 700,
                 shapes: vec![0],
                 aka: Vec::new(),
+                color: String::new(),
+                text_color: String::new(),
             }],
             shapes: vec![Shape {
                 id: "sh1".into(),
